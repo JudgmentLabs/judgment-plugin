@@ -47,6 +47,17 @@ installing, then authenticate:
 codex mcp login judgment
 ```
 
+### Other agents (npx skills)
+
+For Cursor, Windsurf, and other agents, install the skills with the
+[skills CLI](https://skills.sh):
+
+```bash
+npx skills add JudgmentLabs/judgment-plugin
+```
+
+Then add the MCP server manually (see Standalone MCP below).
+
 ## Authentication
 
 The plugin ships with **OAuth** as the default (Judgment's recommended
