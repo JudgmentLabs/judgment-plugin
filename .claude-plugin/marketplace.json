@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "judgment-plugin",
+  "owner": {
+    "name": "Judgment Labs",
+    "email": "support@judgmentlabs.ai"
+  },
+  "metadata": {
+    "description": "Judgment Labs plugin for Claude Code: the Judgment MCP server plus official skills for tracing, evaluation, and MCP usage."
+  },
+  "plugins": [
+    {
+      "name": "judgment",
+      "source": "./",
+      "description": "Judgment MCP server plus official skills (tracing, evaluations, code judges, MCP usage best practices)."
+    }
+  ]
+}

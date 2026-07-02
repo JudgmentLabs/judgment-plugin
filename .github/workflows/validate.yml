@@ -1,0 +1,23 @@
+name: Validate plugins
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check JSON manifests are well-formed
+        run: |
+          find . -name '*.json' -not -path './.git/*' -print0 |
+            xargs -0 -n1 python3 -c 'import json,sys; json.load(open(sys.argv[1])); print("OK", sys.argv[1])'
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Validate Claude Code plugin and marketplace
+        run: claude plugin validate .

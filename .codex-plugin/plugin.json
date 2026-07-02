@@ -1,0 +1,46 @@
+{
+  "name": "judgment",
+  "version": "1.0.0",
+  "description": "Access Judgment traces, sessions, behaviors, judges, prompts, datasets, and tests directly from Codex, with official skills for tracing, evaluation, and MCP usage best practices.",
+  "author": {
+    "name": "Judgment Labs",
+    "email": "support@judgmentlabs.ai",
+    "url": "https://judgmentlabs.ai"
+  },
+  "homepage": "https://docs.judgmentlabs.ai/documentation/mcp-server",
+  "repository": "https://github.com/JudgmentLabs/judgment-plugin",
+  "license": "Apache-2.0",
+  "keywords": [
+    "judgment",
+    "judgeval",
+    "mcp",
+    "observability",
+    "tracing",
+    "evaluation",
+    "agent-judges",
+    "llm-monitoring"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Judgment",
+    "shortDescription": "Query Judgment traces, sessions, behaviors, judges, and docs.",
+    "longDescription": "Adds the Judgment MCP server and the official Judgment skills so Codex can inspect live agent data and follow Judgment best practices for tracing, evaluations, code judges, datasets, and monitoring.",
+    "developerName": "Judgment Labs",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://judgmentlabs.ai",
+    "brandColor": "#FF4B2E",
+    "logo": "./assets/logo.svg",
+    "composerIcon": "./assets/composer-icon.svg",
+    "defaultPrompt": [
+      "Show me recent high-cost Judgment traces.",
+      "Find sessions with errors in Judgment.",
+      "Search Judgment docs for MCP setup."
+    ]
+  }
+}

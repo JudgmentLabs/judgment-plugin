@@ -1,0 +1,20 @@
+{
+  "name": "judgment",
+  "interface": {
+    "displayName": "Judgment"
+  },
+  "plugins": [
+    {
+      "name": "judgment",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/JudgmentLabs/judgment-plugin.git"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

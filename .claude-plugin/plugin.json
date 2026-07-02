@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "judgment",
+  "displayName": "Judgment",
+  "description": "Access Judgment traces, sessions, behaviors, judges, prompts, datasets, and tests directly from your AI coding tool, with official skills for tracing, evaluation, and MCP usage best practices.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Judgment Labs",
+    "email": "support@judgmentlabs.ai",
+    "url": "https://judgmentlabs.ai"
+  },
+  "homepage": "https://docs.judgmentlabs.ai/documentation/mcp-server",
+  "repository": "https://github.com/JudgmentLabs/judgment-plugin",
+  "license": "Apache-2.0",
+  "keywords": [
+    "judgment",
+    "judgeval",
+    "mcp",
+    "observability",
+    "tracing",
+    "evaluation",
+    "agent-judges",
+    "llm-monitoring"
+  ]
+}

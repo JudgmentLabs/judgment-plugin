@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "judgment": {
+      "type": "http",
+      "url": "https://mcp.judgmentlabs.ai"
+    }
+  }
+}
