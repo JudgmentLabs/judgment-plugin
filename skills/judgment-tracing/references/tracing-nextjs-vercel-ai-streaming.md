@@ -138,6 +138,23 @@ input/output to the framework's active tool span, such as safe IDs, counts,
 status, and byte lengths. Do not duplicate each framework tool span with a
 second manual tool span.
 
+Make both sides explicit when they are safe; disabling framework capture must
+not leave a tool span with no useful input:
+
+```typescript
+async execute({ orderId }) {
+  Tracer.setInput({ orderId });
+  const order = await getOrder(orderId);
+  Tracer.setOutput({ orderId, found: order != null });
+  return order;
+}
+```
+
+Use the active framework tool span only after verifying that the integration
+keeps it active during `execute`. If it does not, add one manual child with
+automatic capture disabled instead of silently writing attributes to the wrong
+span.
+
 ## 4. Finalize after the framework telemetry span, then flush
 
 In Vercel AI SDK versions where `streamText.onFinish` runs before the outer
@@ -145,48 +162,103 @@ In Vercel AI SDK versions where `streamText.onFinish` runs before the outer
 that callback. Doing so can produce a root that ends before its child or flush
 before the final child is exportable.
 
-For a Next.js App Router version that supports `after`, return an idempotent
-finalizer with the stream result and register it in the request lifecycle.
-`after` runs after the streamed response finishes and the runtime waits for its
-returned promise:
+For a hard-restart-safe local or self-hosted server, make response EOF the
+barrier: pass each response chunk through unchanged, but do not close the
+returned body until the AI stream is finished, the application root has ended,
+and `Tracer.forceFlush()` has resolved. This preserves streaming while making
+an immediately following process kill wait for export.
+
+Start the internal stream consumption while the application root is active and
+return its completion promise with an idempotent finalizer:
 
 ```typescript
 // In the agent module, inside startActiveSpan(...):
-let finalized = false;
-const finalize = async () => {
-  if (finalized) return;
-  finalized = true;
-  rootSpan.end();
-  await Tracer.forceFlush();
-};
-
+let finalization: Promise<void> | undefined;
 const result = streamText({
   // onFinish persists and sets root output but does not end the root.
   // onError/onAbort record the outcome but do not detach export work.
 });
 
+// Start this while the root is active so generation, tools, persistence, and
+// the AI SDK's final telemetry work retain the intended context.
+const streamDone = result.consumeStream({
+  onError(error) {
+    Tracer.setError(error, rootSpan);
+  },
+});
+
+const finalize = (error?: unknown): Promise<void> => {
+  if (error) Tracer.setError(error, rootSpan);
+  return (finalization ??= (async () => {
+    try {
+      await streamDone;
+    } finally {
+      rootSpan.end();
+      await Tracer.forceFlush();
+    }
+  })());
+};
+
 return { result, finalize };
 ```
 
 ```typescript
-// In the App Router route handler:
-import { after } from "next/server";
-
+// In the App Router route handler, after validation and session lookup:
 const { result, finalize } = runAgentTurn({ session, userMessage });
-after(async () => {
-  await finalize();
+const response = result.toTextStreamResponse();
+const reader = response.body!.getReader();
+
+const body = new ReadableStream<Uint8Array>({
+  async pull(controller) {
+    try {
+      const { done, value } = await reader.read();
+      if (!done) {
+        controller.enqueue(value);
+        return;
+      }
+
+      // Export completes before the client observes response EOF.
+      await finalize();
+      controller.close();
+    } catch (error) {
+      try {
+        await finalize(error);
+      } finally {
+        controller.error(error);
+      }
+    }
+  },
+  async cancel(reason) {
+    try {
+      await reader.cancel(reason);
+    } finally {
+      await finalize(reason);
+    }
+  },
 });
 
-return result.toTextStreamResponse();
+return new Response(body, {
+  status: response.status,
+  statusText: response.statusText,
+  headers: response.headers,
+});
 ```
 
-The route still returns the original streaming response without buffering it.
-The completion callback first finishes persistence and sets output. The later
-`after` callback then ends the application root and awaits
-`Tracer.forceFlush()`.
+Use the application's existing abort controller or request signal on client
+cancellation so upstream generation does not continue invisibly. Keep response
+headers and status intact. The wrapper above does not buffer the response: it
+forwards chunks as they arrive and delays only the final EOF until export is
+complete.
 
-If the installed Next.js version does not support `after`, use a response-body
-or runtime finalizer whose promise is awaited after upstream stream completion.
+Next.js `after(...)` or `waitUntil(...)` can still be appropriate when the
+actual deployment runtime guarantees that it waits for those promises during
+freeze and shutdown. Do not assume that guarantee. In the standalone Next.js
+server, an `after` callback begins after the response closes, and a hard
+process/container kill can interrupt it. For an immediate-kill verification
+scenario, `after(finalize)` alone is not a sufficient barrier.
+
+If the application cannot wrap the response body, use another runtime finalizer
+whose promise is demonstrably awaited through the tested freeze/restart path.
 The ordering must remain:
 
 1. model and tool work completes;
@@ -236,8 +308,10 @@ blocked; do not replace it with “you should see traces.”
 | Parentage | AI SDK model/tool spans and meaningful manual spans share the application's trace ID |
 | Context | Exact stable session/customer identifiers are set inside the active root |
 | Payload safety | Automatic framework input/output capture is deliberately configured; raw stored attributes exclude full histories, schemas, documents, files, and secrets |
+| Tool usefulness | Every executed business tool retains its identity plus bounded semantic input and output-or-error after automatic capture is disabled |
 | Finalization | Persistence and final output complete before framework telemetry closes; the application root ends afterward |
-| Export lifecycle | An awaited `Tracer.forceFlush()` is attached to `after` or another lifecycle primitive the runtime waits for |
+| Export lifecycle | An awaited `Tracer.forceFlush()` completes before response EOF, or is attached to a deployment lifecycle primitive proven to survive the tested freeze/restart behavior |
+| Error and cancellation | Stream errors and client cancellation are recorded on the root, and cancellation stops upstream work before finalization |
 | Real-path proof | A production-style model/tool request is found in Judgment by its exact session ID or unique marker |
 | Restart proof | The completed pre-restart turn and first post-restart turn both arrive intact |
 
