@@ -77,7 +77,7 @@ Only apply these when the project architecture calls for them:
 | ----------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | Tracer across project semantics     | Tracing spans multiple files or modules                                        | https://docs.judgmentlabs.ai/sdk-reference/python/trace/tracer                     | Preserves one coherent trace across the codebase                          |
 | Active tracers with project names   | Multiple Judgment projects are needed                                          | https://docs.judgmentlabs.ai/documentation/performance/tracing#project-routing     | Keeps staging, prod, or customer traces in the right place                |
-| Distributed tracing                 | Requests cross stateless service, worker, queue, serverless, or RPC boundaries | https://docs.judgmentlabs.ai/documentation/performance/tracing#distributed-tracing | Keeps downstream spans connected when in-memory context cannot carry over |
+| Distributed tracing                 | One bounded unit of work crosses a stateless service, worker, queue, serverless, or RPC boundary | https://docs.judgmentlabs.ai/documentation/performance/tracing#distributed-tracing | Keeps downstream spans connected when one real root can own the complete unit; durable suspends still require new traces grouped by session |
 | Streaming and deferred completion   | A function returns before generation, tools, callbacks, persistence, or export finish | Relevant framework integration and tracer lifecycle docs                      | Keeps the root open for the actual unit of work and prevents silent span loss |
 | Agent subtracing with linked traces | Agents delegate to subagent                                     | https://docs.judgmentlabs.ai/documentation/performance/tracing#subagent-tracing    | Splits subagents into their own traces for independent evaluation        |
 
@@ -170,6 +170,13 @@ end it at a real durable checkpoint and start a new trace for the next work
 segment. Group related segments with the application's stable workflow or run
 identifier as `session_id`. Do not keep a short HTTP request root open on paper
 while unrelated worker activity continues after its time window.
+
+For Temporal and other durable workflow engines, read the focused
+[durable-workflow reference](tracing-durable-workflows-temporal.md). A framework
+interceptor can propagate spans without choosing correct application roots. In
+particular, do not inherit a short submission request as the parent of an
+hours-long job, and verify `session_id` on each stored root rather than assuming
+that setting it inside an activity updated its ancestors.
 
 #### Confirm initialization in the real runtime
 
@@ -528,4 +535,7 @@ https://docs.judgmentlabs.ai/documentation/performance/tracing#distributed-traci
 | Missing `session_id` for chat apps             | Conversations do not group in Sessions           | Set `session_id` on each root trace in the conversation               |
 | Switching projects mid-trace                   | Spans may route incorrectly or fail to switch    | Route before the root span starts                                     |
 | Missing distributed propagation                | Downstream service appears as an unrelated trace | Inject and continue trace context across service boundaries           |
+| Treating a durable job as one request trace     | A short submit root finalizes before worker children or stays open across an indefinite suspend | End traces at durable checkpoints and group restart-safe work traces with the workflow ID as `session_id` |
+| Using a Temporal interceptor as the trace design | Framework shells form a malformed mega-trace or drown out business work | Choose application request/segment/activity roots first; use the interceptor only where it supports that model |
+| Setting a durable session only inside a child   | The activity shows an ID but the root and Sessions view remain ungrouped | Set the exact workflow ID after each application root becomes active, then verify the raw root attribute |
 | Guessing SDK APIs from memory                  | Outdated code or mixed SDK generations           | Fetch docs and match the installed SDK version                        |

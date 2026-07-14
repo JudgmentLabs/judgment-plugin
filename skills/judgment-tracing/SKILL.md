@@ -41,12 +41,22 @@ miss in the general tracing guide.
   uses the separate `@ai-sdk/otel` / `registerTelemetry` integration described
   in the current Judgment Vercel AI SDK documentation; do not copy the 5/6
   `experimental_telemetry` setup into an AI SDK 7 application.
+- If the application uses **Temporal or another durable workflow engine**, or
+  can pause for human approval, timers, retries, or external signals, read
+  [references/tracing-durable-workflows-temporal.md](references/tracing-durable-workflows-temporal.md)
+  completely before implementing. The official Temporal interceptor connects
+  OpenTelemetry spans, but it does not choose the application's meaningful
+  trace boundaries for you. Do not let a short submit request become the root
+  of work that continues after the request, and do not stretch one root across
+  a durable suspend.
 
 ## Use Case References
 
 - Adding or auditing tracing: [references/tracing.md](references/tracing.md)
 - Next.js + Vercel AI SDK streaming:
   [references/tracing-nextjs-vercel-ai-streaming.md](references/tracing-nextjs-vercel-ai-streaming.md)
+- Temporal and other durable workflows:
+  [references/tracing-durable-workflows-temporal.md](references/tracing-durable-workflows-temporal.md)
 - Creating evaluations and choosing scorers: [references/evaluations.md](references/evaluations.md)
 - Testing agent changes with OfflineTracer: [references/agent-testing.md](references/agent-testing.md)
 - Creating Python code judges: [references/code-judges.md](references/code-judges.md)
