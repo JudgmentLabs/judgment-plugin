@@ -11,6 +11,8 @@ For a conversational agent, one completed user turn should normally be one
 trace:
 
 - The application root starts after the request and session are validated.
+- The root name identifies the application and unit of work (for example,
+  `deskflow.turn`), rather than a generic name such as `agent-turn`.
 - The root remains open through model generation, tool calls, streaming,
   application persistence, and final output collection.
 - The Vercel AI SDK model and tool spans are children of that root.
@@ -30,12 +32,14 @@ a provider in one copy while the request route uses a no-op tracer from the
 other. The application still builds and serves successful responses, but it
 exports zero traces.
 
-Initialize once in `instrumentation.ts`:
+Initialize once in the Node branch of `instrumentation.ts`. Use a delayed
+import so an Edge instrumentation pass does not load a Node-only SDK:
 
 ```typescript
-import { Tracer } from "judgeval";
-
 export async function register() {
+  if (process.env.NEXT_RUNTIME !== "nodejs") return;
+
+  const { Tracer } = await import("judgeval");
   await Tracer.init({
     projectName: process.env.JUDGMENT_PROJECT_NAME ?? "my-agent",
   });
@@ -96,7 +100,8 @@ active.
 
 ```typescript
 const result = Tracer.getOTELTracer().startActiveSpan(
-  "agent-turn",
+  // Use this application's stable business name, not a generic copied name.
+  "deskflow.turn",
   (rootSpan) => {
     Tracer.setSpanKind("agent", rootSpan);
     Tracer.setSessionId(session.id);
@@ -305,6 +310,7 @@ blocked; do not replace it with “you should see traces.”
 | Initialization | `Tracer.init()` runs from the supported server startup hook before real requests |
 | Complete configuration | Key, org, project, `JUDGMENT_API_URL`, and `JUDGMENT_API_BASE` are forwarded wherever present in the launcher |
 | Correct boundary | One application root represents the completed streamed turn, not stream construction |
+| Name quality | The application root and any manual spans use stable business-specific names rather than copied generic placeholders |
 | Parentage | AI SDK model/tool spans and meaningful manual spans share the application's trace ID |
 | Context | Exact stable session/customer identifiers are set inside the active root |
 | Payload safety | Automatic framework input/output capture is deliberately configured; raw stored attributes exclude full histories, schemas, documents, files, and secrets |
