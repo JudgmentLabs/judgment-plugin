@@ -121,68 +121,20 @@ the framework integration does not create the application-level root:
    customer context, and stable application attributes.
 3. Construct the stream with the supported framework telemetry enabled so its
    model and tool spans inherit the active root.
-4. In the framework's completion callback, finish persistence first, set the
-   final user-visible output, then end the root.
-5. Also end the root on stream error, abort, or cancellation. Record the error
-   before ending it.
+4. In the framework's completion callback, finish persistence and set the final
+   user-visible output, but do not assume that callback is late enough to end
+   the root. Some integrations close their own outer telemetry span afterward.
+5. End the root from one idempotent completion barrier that runs after every
+   meaningful child has finished. Error, abort, and cancellation paths must
+   reach the same barrier after recording their outcome.
 
-In TypeScript, when the root must outlive the synchronous function that creates
-the stream, create it through Judgeval's exposed OpenTelemetry tracer and end
-it yourself from the completion callbacks. Do not combine
-`Tracer.startSpan(...)` with a separately imported OpenTelemetry
-`context.with(...)`: that can update a different context manager from the one
-Judgeval's session/customer setters and framework tracer use.
-
-```typescript
-return Tracer.getOTELTracer().startActiveSpan(
-  "agent-turn",
-  (rootSpan) => {
-    Tracer.setSpanKind("agent", rootSpan);
-    Tracer.setSessionId(sessionId);
-    Tracer.setCustomerId(customerId);
-    Tracer.setInput({ message: boundedMessage }, rootSpan);
-
-    let rootEnded = false;
-    const endRoot = () => {
-      if (!rootEnded) {
-        rootEnded = true;
-        rootSpan.end();
-      }
-    };
-
-    return streamText({
-      // Existing model, messages, and tools stay unchanged.
-      experimental_telemetry: {
-        isEnabled: true,
-        tracer: Tracer.getOTELTracer(),
-      },
-      async onFinish({ text }) {
-        try {
-          await persistCompletedTurn();
-          Tracer.setOutput({ text: boundedText(text) }, rootSpan);
-        } catch (error) {
-          Tracer.setError(error, rootSpan);
-          throw error;
-        } finally {
-          endRoot();
-        }
-      },
-      onError({ error }) {
-        Tracer.setError(error, rootSpan);
-        endRoot();
-      },
-      onAbort() {
-        Tracer.setAttribute("agent.aborted", true, rootSpan);
-        endRoot();
-      },
-    });
-  },
-);
-```
-
-Use the application's real persistence and sanitization helpers in place of
-the illustrative functions above. Make root finalization idempotent because a
-framework can expose overlapping error, abort, and completion paths.
+Use the integration-specific reference for copyable implementation code. In
+particular, Next.js + Vercel AI SDK streaming has version-specific setup and
+completion ordering; the focused reference takes precedence over this general
+sequence. When a TypeScript root must outlive the synchronous function that
+creates a stream, use Judgeval's exposed OpenTelemetry tracer rather than
+mixing `Tracer.startSpan(...)` with a separately imported OpenTelemetry
+`context.with(...)` that may use a different context manager.
 
 Ending the spans is not the same as exporting them. A batch exporter can still
 hold a fully completed turn in memory when a container is killed, a serverless
@@ -192,7 +144,8 @@ happen, create one completion barrier that does all of the following in order:
 1. wait for generation, tool calls, stream consumption, and persistence;
 2. let the framework's telemetry spans finish;
 3. end the application root; and
-4. `await Tracer.forceFlush()` before the runtime is allowed to freeze or exit.
+4. make a bounded, observable `await Tracer.forceFlush()` attempt before the
+   runtime is allowed to freeze or exit.
 
 Connect that promise to a lifecycle mechanism the runtime actually waits for,
 such as a response-stream finalizer, `waitUntil`, `after`, a job acknowledgement,
@@ -231,18 +184,9 @@ asynchronous initialization finishes.
   defer binding until the real request executes.
 - Check framework bundling and external-package requirements when startup and
   request code otherwise see different library instances.
-- In Next.js server builds, startup instrumentation and route modules may be
-  bundled separately. Keep one shared runtime instance of `judgeval`; for
-  supported Next.js versions this normally means adding `judgeval` to
-  `serverExternalPackages` in the existing Next config. If application or
-  integration code already imports `@opentelemetry/api` directly, also verify
-  that the build resolves one shared copy and externalize/dedupe it when needed.
-  Do not add a direct OpenTelemetry dependency merely to activate a Judgeval
-  span: use `Tracer.getOTELTracer().startActiveSpan(...)` as shown above. Two
-  context-manager copies can leave the application root and framework
-  model/tool spans as separate top-level traces. Confirm the standalone output
-  contains external imports from the instrumentation hook and request route
-  instead of bundled SDK or OpenTelemetry API copies.
+- Follow the integration-specific reference for framework bundling rules. A
+  split startup/request bundle can initialize one SDK copy while application
+  code silently uses another no-op copy.
 - Verify shared runtime behavior from the stored production-path trace, not
   merely from a successful build or synthetic span. The application root,
   framework model/tool spans, and any manually added children must share one
@@ -255,9 +199,9 @@ asynchronous initialization finishes.
 - If the app runs in Docker, a worker platform, or another deployment wrapper,
   treat the complete Judgment connection configuration as one deployment unit.
   Forward `JUDGMENT_API_KEY`, `JUDGMENT_ORG_ID`, the intended project name, and
-  every endpoint override present in the launching environment—especially
-  `JUDGMENT_API_URL` and `JUDGMENT_API_BASE`—into every process that exports
-  spans. Do not forward only the key/org/project trio. A scoped gateway, proxy,
+  every endpoint override supported by the installed SDK and present in the
+  launching environment—especially `JUDGMENT_API_URL`—into every process that
+  exports spans. Do not forward only the key/org/project trio. A scoped gateway, proxy,
   self-hosted endpoint, test environment, or regional endpoint may use a valid
   key only at its configured URL; silently dropping that URL sends the key to
   the wrong backend and produces authentication failures or no traces.
@@ -269,9 +213,8 @@ asynchronous initialization finishes.
   environment:
     JUDGMENT_API_KEY: ${JUDGMENT_API_KEY:-}
     JUDGMENT_ORG_ID: ${JUDGMENT_ORG_ID:-}
-    JUDGMENT_PROJECT_NAME: ${JUDGMENT_PROJECT_NAME:-my-agent}
+    JUDGMENT_PROJECT_NAME: ${JUDGMENT_PROJECT_NAME:?JUDGMENT_PROJECT_NAME is required}
     JUDGMENT_API_URL: ${JUDGMENT_API_URL:-}
-    JUDGMENT_API_BASE: ${JUDGMENT_API_BASE:-}
   ```
 
   Before declaring the integration verified, compare the names of all
@@ -331,20 +274,12 @@ sizes/counts, status, and a bounded redacted preview only when that preview is
 actually needed. Do not treat an SDK's maximum accepted payload as an
 observability safety limit.
 
-Framework telemetry may also capture inputs and outputs by default. For
-example, Vercel AI SDK telemetry defaults both `recordInputs` and
-`recordOutputs` to true. When the call receives conversation history, system
-prompts, tool schemas, files, HTML, or other potentially large/sensitive data,
-turn those defaults off and keep the bounded application root:
-
-```typescript
-experimental_telemetry: {
-  isEnabled: true,
-  recordInputs: false,
-  recordOutputs: false,
-  tracer: Tracer.getOTELTracer(),
-}
-```
+Framework telemetry may also capture inputs and outputs by default. When a call
+receives conversation history, system prompts, tool schemas, files, HTML, or
+other potentially large/sensitive data, use the installed integration's
+version-specific controls to turn bulk capture off and keep a bounded,
+sanitized application root. Do not copy configuration fields from another SDK
+major version.
 
 Then preserve useful tool observability deliberately. If the integration keeps
 its tool span active while the tool executes, set a sanitized input/output on
@@ -587,7 +522,7 @@ https://docs.judgmentlabs.ai/documentation/performance/tracing#distributed-traci
 | Initializing tracing in every module/request   | Duplicate setup and export issues                | Initialize once in startup/bootstrap code                             |
 | Bundling separate tracing SDK copies           | Startup initializes one copy while routes use a no-op copy | Externalize/share the tracing package in the server runtime |
 | Setting session context before a root exists   | Setters have no active span to attach to         | Start the root, then set session/customer context inside it            |
-| Wrapping a function that only returns a stream | Root ends before generation and persistence      | End a manually controlled root from finish/error/abort callbacks       |
+| Wrapping a function that only returns a stream | Root ends before generation and persistence      | Use the integration's post-child completion barrier, including error/abort paths |
 | Blanket-wrapping persistence helpers           | Noisy roots and excessive payload capture        | Trace only high-value operations with bounded attributes               |
 | Env vars present only on the host               | Container or worker exports nothing              | Forward Judgment variables into every runtime that performs work       |
 | Missing `session_id` for chat apps             | Conversations do not group in Sessions           | Set `session_id` on each root trace in the conversation               |

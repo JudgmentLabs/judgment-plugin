@@ -29,13 +29,18 @@ Before changing tracing code, identify the runtime and the API that marks the
 real end of the work. Some architectures need requirements that are easy to
 miss in the general tracing guide.
 
-- If the application is a **Next.js server using the Vercel AI SDK to stream an
-  agent response**, read
+- If the application is a **Next.js Node server using the Vercel AI SDK to
+  stream an agent response**, inspect the installed `ai` major version first,
+  then read
   [references/tracing-nextjs-vercel-ai-streaming.md](references/tracing-nextjs-vercel-ai-streaming.md)
   completely before implementing. Its architecture-specific requirements take
   precedence over generic examples, and its completion gate is required. Do
   not claim the integration works from a build, typecheck, unit test, or
   synthetic span; verify a real production-style route and its stored trace.
+  The copyable code in that reference is for AI SDK 5/6 text streams. AI SDK 7
+  uses the separate `@ai-sdk/otel` / `registerTelemetry` integration described
+  in the current Judgment Vercel AI SDK documentation; do not copy the 5/6
+  `experimental_telemetry` setup into an AI SDK 7 application.
 
 ## Use Case References
 
