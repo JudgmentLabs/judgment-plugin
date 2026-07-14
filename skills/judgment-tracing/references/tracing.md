@@ -98,14 +98,37 @@ For a streamed user turn:
 
 - Use one root for the completed turn, not merely for constructing or returning
   the stream.
+- Do not use an automatic function wrapper as the root when the wrapped
+  function synchronously returns a stream handle. The wrapper will end when the
+  handle is returned, before the streamed work finishes.
 - Keep the root active through model generation, tool calls, stream completion,
   final output collection, and application persistence.
 - Preserve streaming behavior. Do not buffer the response solely to make the
   trace easier to implement.
 - Set the root output to the final user-visible result, not the stream object or
   an empty placeholder.
+- Set session and customer context only after the root span is active. The
+  Judgment setters target the current active span; calling them before a root
+  exists does not create context for a future span.
 - Arrange export/flush work through the runtime's supported lifecycle mechanism
   so a serverless freeze, process exit, or restart does not discard the turn.
+
+For callback-driven streaming APIs, use a manually controlled active root when
+the framework integration does not create the application-level root:
+
+1. Start the active root immediately before constructing the stream.
+2. Inside that active root, set the sanitized input, span type, session ID,
+   customer context, and stable application attributes.
+3. Construct the stream with the supported framework telemetry enabled so its
+   model and tool spans inherit the active root.
+4. In the framework's completion callback, finish persistence first, set the
+   final user-visible output, then end the root.
+5. Also end the root on stream error, abort, or cancellation. Record the error
+   before ending it.
+
+Do not assume framework telemetry creates the application-level root. For
+example, Vercel AI SDK telemetry can describe generation and tool steps while
+the application still needs a root for the completed chat turn.
 
 If one root cannot safely continue across a durable suspend or process boundary,
 end it at a real durable checkpoint and start a new trace for the next work
@@ -126,8 +149,36 @@ asynchronous initialization finishes.
   defer binding until the real request executes.
 - Check framework bundling and external-package requirements when startup and
   request code otherwise see different library instances.
+- In Next.js server builds, startup instrumentation and route modules may be
+  bundled separately. Keep one shared runtime instance of judgeval; for
+  supported Next.js versions this normally means adding judgeval to
+  serverExternalPackages in the existing Next config. Confirm the standalone
+  output contains an external import/require from both the instrumentation hook
+  and request route instead of two bundled SDK copies.
 - Treat every process that performs important work as a separate runtime that
   needs deliberate initialization and export lifecycle handling.
+- If the app runs in Docker, a worker platform, or another deployment wrapper,
+  explicitly forward JUDGMENT_API_KEY, JUDGMENT_ORG_ID, JUDGMENT_API_URL when
+  used, and the intended project name into the process. A host dotenv file does
+  not automatically become container environment. Verify variable presence
+  inside the actual runtime without printing values.
+
+#### Keep payload capture deliberate
+
+Automatic wrappers record function arguments and return values unless
+configured otherwise. Do not blanket-wrap persistence, cache, or framework
+helpers: they often duplicate the trace, create unrelated roots, and capture
+full histories, documents, or records.
+
+- Prefer the model and tool spans supplied by the framework integration.
+- Add manual spans only for high-value retrieval, durable state changes,
+  external calls, retries, and errors that are otherwise invisible.
+- Disable automatic input/output recording when arguments or results contain
+  conversation history, files, schemas, HTML, database records, or secrets.
+  Record small sanitized attributes and outcomes instead.
+- Do not label ordinary database reads and writes as agent tools merely because
+  they are functions. Preserve the semantic difference between an agent tool
+  choice and an internal persistence operation.
 
 ### 3. Explore Traces First
 
@@ -354,6 +405,11 @@ https://docs.judgmentlabs.ai/documentation/performance/tracing#distributed-traci
 | Manual instrumentation when integration exists | More code, less context                          | Use the matching framework or provider integration                    |
 | Double-instrumenting the same model call       | Duplicate spans and confusing costs              | Use one instrumentation path per model call                           |
 | Initializing tracing in every module/request   | Duplicate setup and export issues                | Initialize once in startup/bootstrap code                             |
+| Bundling separate tracing SDK copies           | Startup initializes one copy while routes use a no-op copy | Externalize/share the tracing package in the server runtime |
+| Setting session context before a root exists   | Setters have no active span to attach to         | Start the root, then set session/customer context inside it            |
+| Wrapping a function that only returns a stream | Root ends before generation and persistence      | End a manually controlled root from finish/error/abort callbacks       |
+| Blanket-wrapping persistence helpers           | Noisy roots and excessive payload capture        | Trace only high-value operations with bounded attributes               |
+| Env vars present only on the host               | Container or worker exports nothing              | Forward Judgment variables into every runtime that performs work       |
 | Missing `session_id` for chat apps             | Conversations do not group in Sessions           | Set `session_id` on each root trace in the conversation               |
 | Switching projects mid-trace                   | Spans may route incorrectly or fail to switch    | Route before the root span starts                                     |
 | Missing distributed propagation                | Downstream service appears as an unrelated trace | Inject and continue trace context across service boundaries           |
