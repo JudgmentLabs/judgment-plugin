@@ -150,11 +150,22 @@ asynchronous initialization finishes.
 - Check framework bundling and external-package requirements when startup and
   request code otherwise see different library instances.
 - In Next.js server builds, startup instrumentation and route modules may be
-  bundled separately. Keep one shared runtime instance of judgeval; for
-  supported Next.js versions this normally means adding judgeval to
-  serverExternalPackages in the existing Next config. Confirm the standalone
-  output contains an external import/require from both the instrumentation hook
-  and request route instead of two bundled SDK copies.
+  bundled separately. Keep one shared runtime instance of both `judgeval` and
+  `@opentelemetry/api`; for supported Next.js versions this normally means
+  adding both packages to `serverExternalPackages` in the existing Next config.
+  Externalizing only `judgeval` is not enough when application code imports
+  `@opentelemetry/api` directly: two OpenTelemetry API copies can create
+  disconnected context managers, leaving the application root and framework
+  model/tool spans as separate top-level traces. Confirm the standalone output
+  contains an external import/require from the instrumentation hook and request
+  route instead of bundled SDK or OpenTelemetry API copies.
+- Verify shared runtime behavior from the stored production-path trace, not
+  merely from a successful build or synthetic span. The application root,
+  framework model/tool spans, and any manually added children must share one
+  trace ID; session and customer context set inside the root must appear on that
+  root; and the root time window must contain the meaningful child work. Two
+  independently exported top-level traces are a failed integration even if
+  both contain plausible data.
 - Treat every process that performs important work as a separate runtime that
   needs deliberate initialization and export lifecycle handling.
 - If the app runs in Docker, a worker platform, or another deployment wrapper,
