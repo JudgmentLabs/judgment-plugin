@@ -184,6 +184,30 @@ Use the application's real persistence and sanitization helpers in place of
 the illustrative functions above. Make root finalization idempotent because a
 framework can expose overlapping error, abort, and completion paths.
 
+Ending the spans is not the same as exporting them. A batch exporter can still
+hold a fully completed turn in memory when a container is killed, a serverless
+instance freezes, or a short-lived process exits. For runtimes where that can
+happen, create one completion barrier that does all of the following in order:
+
+1. wait for generation, tool calls, stream consumption, and persistence;
+2. let the framework's telemetry spans finish;
+3. end the application root; and
+4. `await Tracer.forceFlush()` before the runtime is allowed to freeze or exit.
+
+Connect that promise to a lifecycle mechanism the runtime actually waits for,
+such as a response-stream finalizer, `waitUntil`, `after`, a job acknowledgement,
+or the main CLI promise. A detached `void Tracer.forceFlush()` call is still a
+race. If a framework invokes `onFinish` before its outer telemetry span closes,
+flush from the later response/runtime finalizer rather than from inside that
+early callback.
+
+Verify the barrier adversarially: complete a real streamed turn and immediately
+kill or restart the worker. The completed pre-restart turn and the first
+post-restart turn must both arrive with their final root input/output, non-zero
+root duration, session/customer context, and complete child tree. A partial
+zero-duration root or missing final framework span is export-lifecycle failure,
+even when earlier and later turns look correct.
+
 Do not assume framework telemetry creates the application-level root. For
 example, Vercel AI SDK telemetry can describe generation and tool steps while
 the application still needs a root for the completed chat turn.
@@ -208,15 +232,17 @@ asynchronous initialization finishes.
 - Check framework bundling and external-package requirements when startup and
   request code otherwise see different library instances.
 - In Next.js server builds, startup instrumentation and route modules may be
-  bundled separately. Keep one shared runtime instance of both `judgeval` and
-  `@opentelemetry/api`; for supported Next.js versions this normally means
-  adding both packages to `serverExternalPackages` in the existing Next config.
-  Externalizing only `judgeval` is not enough when application code imports
-  `@opentelemetry/api` directly: two OpenTelemetry API copies can create
-  disconnected context managers, leaving the application root and framework
+  bundled separately. Keep one shared runtime instance of `judgeval`; for
+  supported Next.js versions this normally means adding `judgeval` to
+  `serverExternalPackages` in the existing Next config. If application or
+  integration code already imports `@opentelemetry/api` directly, also verify
+  that the build resolves one shared copy and externalize/dedupe it when needed.
+  Do not add a direct OpenTelemetry dependency merely to activate a Judgeval
+  span: use `Tracer.getOTELTracer().startActiveSpan(...)` as shown above. Two
+  context-manager copies can leave the application root and framework
   model/tool spans as separate top-level traces. Confirm the standalone output
-  contains an external import/require from the instrumentation hook and request
-  route instead of bundled SDK or OpenTelemetry API copies.
+  contains external imports from the instrumentation hook and request route
+  instead of bundled SDK or OpenTelemetry API copies.
 - Verify shared runtime behavior from the stored production-path trace, not
   merely from a successful build or synthetic span. The application root,
   framework model/tool spans, and any manually added children must share one
