@@ -126,6 +126,64 @@ the framework integration does not create the application-level root:
 5. Also end the root on stream error, abort, or cancellation. Record the error
    before ending it.
 
+In TypeScript, when the root must outlive the synchronous function that creates
+the stream, create it through Judgeval's exposed OpenTelemetry tracer and end
+it yourself from the completion callbacks. Do not combine
+`Tracer.startSpan(...)` with a separately imported OpenTelemetry
+`context.with(...)`: that can update a different context manager from the one
+Judgeval's session/customer setters and framework tracer use.
+
+```typescript
+return Tracer.getOTELTracer().startActiveSpan(
+  "agent-turn",
+  (rootSpan) => {
+    Tracer.setSpanKind("agent", rootSpan);
+    Tracer.setSessionId(sessionId);
+    Tracer.setCustomerId(customerId);
+    Tracer.setInput({ message: boundedMessage }, rootSpan);
+
+    let rootEnded = false;
+    const endRoot = () => {
+      if (!rootEnded) {
+        rootEnded = true;
+        rootSpan.end();
+      }
+    };
+
+    return streamText({
+      // Existing model, messages, and tools stay unchanged.
+      experimental_telemetry: {
+        isEnabled: true,
+        tracer: Tracer.getOTELTracer(),
+      },
+      async onFinish({ text }) {
+        try {
+          await persistCompletedTurn();
+          Tracer.setOutput({ text: boundedText(text) }, rootSpan);
+        } catch (error) {
+          Tracer.setError(error, rootSpan);
+          throw error;
+        } finally {
+          endRoot();
+        }
+      },
+      onError({ error }) {
+        Tracer.setError(error, rootSpan);
+        endRoot();
+      },
+      onAbort() {
+        Tracer.setAttribute("agent.aborted", true, rootSpan);
+        endRoot();
+      },
+    });
+  },
+);
+```
+
+Use the application's real persistence and sanitization helpers in place of
+the illustrative functions above. Make root finalization idempotent because a
+framework can expose overlapping error, abort, and completion paths.
+
 Do not assume framework telemetry creates the application-level root. For
 example, Vercel AI SDK telemetry can describe generation and tool steps while
 the application still needs a root for the completed chat turn.
