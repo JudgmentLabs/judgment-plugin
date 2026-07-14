@@ -78,7 +78,56 @@ Only apply these when the project architecture calls for them:
 | Tracer across project semantics     | Tracing spans multiple files or modules                                        | https://docs.judgmentlabs.ai/sdk-reference/python/trace/tracer                     | Preserves one coherent trace across the codebase                          |
 | Active tracers with project names   | Multiple Judgment projects are needed                                          | https://docs.judgmentlabs.ai/documentation/performance/tracing#project-routing     | Keeps staging, prod, or customer traces in the right place                |
 | Distributed tracing                 | Requests cross stateless service, worker, queue, serverless, or RPC boundaries | https://docs.judgmentlabs.ai/documentation/performance/tracing#distributed-tracing | Keeps downstream spans connected when in-memory context cannot carry over |
+| Streaming and deferred completion   | A function returns before generation, tools, callbacks, persistence, or export finish | Relevant framework integration and tracer lifecycle docs                      | Keeps the root open for the actual unit of work and prevents silent span loss |
 | Agent subtracing with linked traces | Agents delegate to subagent                                     | https://docs.judgmentlabs.ai/documentation/performance/tracing#subagent-tracing    | Splits subagents into their own traces for independent evaluation        |
+
+#### Choose the work boundary before adding spans
+
+First identify the meaningful unit of work and the event that proves it is
+finished. Start the root when that work is triggered and end it only after its
+final output and important side effects are complete. The return of a function
+is not always the end of the work it started.
+
+Look specifically for APIs that return a stream, iterator, task, workflow
+handle, callback-driven result, or background job. Follow the real execution
+path until you find completion callbacks such as `onFinish`, stream-consumption
+promises, persistence calls, queue acknowledgements, or framework lifecycle
+hooks.
+
+For a streamed user turn:
+
+- Use one root for the completed turn, not merely for constructing or returning
+  the stream.
+- Keep the root active through model generation, tool calls, stream completion,
+  final output collection, and application persistence.
+- Preserve streaming behavior. Do not buffer the response solely to make the
+  trace easier to implement.
+- Set the root output to the final user-visible result, not the stream object or
+  an empty placeholder.
+- Arrange export/flush work through the runtime's supported lifecycle mechanism
+  so a serverless freeze, process exit, or restart does not discard the turn.
+
+If one root cannot safely continue across a durable suspend or process boundary,
+end it at a real durable checkpoint and start a new trace for the next work
+segment. Group related segments with the application's stable workflow or run
+identifier as `session_id`. Do not keep a short HTTP request root open on paper
+while unrelated worker activity continues after its time window.
+
+#### Confirm initialization in the real runtime
+
+Tracer initialization and observed code must use the same active tracer
+provider. Framework startup hooks, server bundles, worker processes, and request
+modules can load separate copies of a tracing library or evaluate modules before
+asynchronous initialization finishes.
+
+- Initialize once in the framework's supported server or worker startup path.
+- Do not create decorators or wrappers at module load time if they can bind to a
+  no-op provider before tracer initialization completes. Initialize first or
+  defer binding until the real request executes.
+- Check framework bundling and external-package requirements when startup and
+  request code otherwise see different library instances.
+- Treat every process that performs important work as a separate runtime that
+  needs deliberate initialization and export lifecycle handling.
 
 ### 3. Explore Traces First
 
@@ -96,9 +145,28 @@ This helps the user:
 - Form opinions about what's missing
 - Ask better questions about what they need
 
-Code inspection can find likely setup, but real verification requires a fresh
-trace and evidence from Judgment. Encourage the user to configure MCP or the CLI
-so the agent can check traces directly, then use the UI for human review.
+Code inspection can find likely setup, but real verification requires fresh
+traffic through the exact application route and runtime that users will run,
+followed by evidence from Judgment. A standalone script, scratch span, unit
+test, host-side probe, or SDK-connectivity trace proves only that credentials
+and export can work from that probe. It does not prove the instrumented server,
+container, worker, stream, or production build exports useful traces.
+
+Use a unique input marker or the application's exact session/workflow ID, then:
+
+1. Start the production-style server, worker, container, or CLI path.
+2. Exercise at least one real request that reaches the model and a tool when the
+   agent has tools.
+3. Wait for deferred work and export to settle.
+4. Find the resulting trace by that marker or exact ID, not merely by recency.
+5. Inspect the root input/output and time window, child model/tool spans, session
+   grouping, errors, and sensitive payloads.
+
+If the real request produces no matching trace, or only the scratch probe
+appears, tracing is not verified. Diagnose the runtime, initialization,
+bundling, configuration, and flush path before declaring success. Encourage the
+user to configure MCP or the CLI so the agent can check traces directly, then
+use the UI for human review.
 
 **Preferred: MCP verification**
 
