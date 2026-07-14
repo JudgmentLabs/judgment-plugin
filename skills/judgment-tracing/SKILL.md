@@ -23,9 +23,25 @@ Follow these principles for all Judgment work:
 7. **Keep credentials out of chat**: Ask the user to set `JUDGMENT_API_KEY` and `JUDGMENT_ORG_ID` locally rather than pasting secrets.
 8. **Use offline agent tests before production changes**: For model, prompt, tool, or agent config changes, pull a stable dataset, collect fresh `OfflineTracer` traces for each input, then evaluate the generated offline examples in one batch. If the production agent is already traced with Judgment, leave that tracing intact and swap only the test harness initialization to `client.offline_tracer(...)`.
 
+## Mandatory Architecture Routing
+
+Before changing tracing code, identify the runtime and the API that marks the
+real end of the work. Some architectures need requirements that are easy to
+miss in the general tracing guide.
+
+- If the application is a **Next.js server using the Vercel AI SDK to stream an
+  agent response**, read
+  [references/tracing-nextjs-vercel-ai-streaming.md](references/tracing-nextjs-vercel-ai-streaming.md)
+  completely before implementing. Its architecture-specific requirements take
+  precedence over generic examples, and its completion gate is required. Do
+  not claim the integration works from a build, typecheck, unit test, or
+  synthetic span; verify a real production-style route and its stored trace.
+
 ## Use Case References
 
 - Adding or auditing tracing: [references/tracing.md](references/tracing.md)
+- Next.js + Vercel AI SDK streaming:
+  [references/tracing-nextjs-vercel-ai-streaming.md](references/tracing-nextjs-vercel-ai-streaming.md)
 - Creating evaluations and choosing scorers: [references/evaluations.md](references/evaluations.md)
 - Testing agent changes with OfflineTracer: [references/agent-testing.md](references/agent-testing.md)
 - Creating Python code judges: [references/code-judges.md](references/code-judges.md)
