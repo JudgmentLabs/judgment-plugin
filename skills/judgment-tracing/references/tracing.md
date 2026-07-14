@@ -203,6 +203,68 @@ full histories, documents, or records.
   they are functions. Preserve the semantic difference between an agent tool
   choice and an internal persistence operation.
 
+Make automatic capture an explicit decision for every observed root and tool.
+Bound methods include `self` or `this`; file tools can receive entire files;
+shell tools can contain credentials in commands; and framework integrations can
+record the complete system prompt, conversation history, and serialized tool
+schemas. A small smoke test does not prove those payloads remain safe in a real
+multi-turn run.
+
+For Python tools whose arguments or results can grow or contain sensitive data,
+disable decorator capture and record a small semantic summary from inside the
+active tool span:
+
+```python
+@Tracer.observe(
+    span_type="tool",
+    span_name="write_file",
+    record_input=False,
+    record_output=False,
+)
+def write_file(self, path: str, content: str) -> dict[str, object]:
+    # Do not record self or the file body. Apply the application's path policy
+    # before recording even the path.
+    Tracer.set_input({"path": safe_relative_path(path), "content_bytes": len(content.encode())})
+    result = persist_file(path, content)
+    Tracer.set_output({"path": safe_relative_path(path), "bytes_written": result["bytes_written"]})
+    return result
+```
+
+Use the same pattern for reads, shell commands, HTTP bodies, retrieval results,
+database records, and tool errors: record the operation, safe identifiers,
+sizes/counts, status, and a bounded redacted preview only when that preview is
+actually needed. Do not treat an SDK's maximum accepted payload as an
+observability safety limit.
+
+Framework telemetry may also capture inputs and outputs by default. For
+example, Vercel AI SDK telemetry defaults both `recordInputs` and
+`recordOutputs` to true. When the call receives conversation history, system
+prompts, tool schemas, files, HTML, or other potentially large/sensitive data,
+turn those defaults off and keep the bounded application root:
+
+```typescript
+experimental_telemetry: {
+  isEnabled: true,
+  recordInputs: false,
+  recordOutputs: false,
+  tracer: Tracer.getOTELTracer(),
+}
+```
+
+Then preserve useful tool observability deliberately. If the integration keeps
+its tool span active while the tool executes, set a sanitized input/output on
+that current span from the tool implementation. Otherwise add one manual child
+span with automatic capture disabled. Do not create a second tool span merely
+to duplicate the framework span; first verify whether the existing active span
+can be enriched.
+
+Verification must inspect raw stored `judgment.input` and `judgment.output` on
+the application root, model spans, and tool spans. Exercise at least one
+multi-turn/history-heavy request and one large or sensitive-shaped tool input.
+Check that the trace still explains the operation while excluding object
+representations, full histories, full tool schemas, file bodies, secrets, and
+unbounded outputs.
+
 ### 3. Explore Traces First
 
 Once baseline instrumentation is working, encourage the user to explore their
