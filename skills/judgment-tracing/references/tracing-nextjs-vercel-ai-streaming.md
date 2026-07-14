@@ -6,11 +6,12 @@ uses Vercel AI SDK 5 or 6 and returns a `streamText` /
 editing; do not guess the installed major version.
 
 AI SDK 7 uses the separate `@ai-sdk/otel` / `registerTelemetry` integration in
-the current Judgment Vercel AI SDK documentation. Keep the trace-boundary,
-payload, and verification requirements below, but do not copy this file's
-`experimental_telemetry` code into AI SDK 7. This recipe also does not cover
-Edge-runtime routes or `toUIMessageStreamResponse`, whose telemetry,
-persistence, and abort mechanics need their own version-specific proof.
+the current [Judgment Vercel AI SDK documentation](https://docs.judgmentlabs.ai/documentation/integrations/agent-frameworks/vercel-ai-sdk).
+Keep the trace-boundary, payload, and verification requirements below, but do
+not copy this file's `experimental_telemetry` code into AI SDK 7. This recipe
+also does not cover Edge-runtime routes or `toUIMessageStreamResponse`, whose
+telemetry, persistence, and abort mechanics need their own version-specific
+proof.
 
 Read the general tracing guide too, but complete every applicable gate in this
 file before saying the integration works.
