@@ -158,10 +158,33 @@ asynchronous initialization finishes.
 - Treat every process that performs important work as a separate runtime that
   needs deliberate initialization and export lifecycle handling.
 - If the app runs in Docker, a worker platform, or another deployment wrapper,
-  explicitly forward JUDGMENT_API_KEY, JUDGMENT_ORG_ID, JUDGMENT_API_URL when
-  used, and the intended project name into the process. A host dotenv file does
-  not automatically become container environment. Verify variable presence
-  inside the actual runtime without printing values.
+  treat the complete Judgment connection configuration as one deployment unit.
+  Forward `JUDGMENT_API_KEY`, `JUDGMENT_ORG_ID`, the intended project name, and
+  every endpoint override present in the launching environment—especially
+  `JUDGMENT_API_URL` and `JUDGMENT_API_BASE`—into every process that exports
+  spans. Do not forward only the key/org/project trio. A scoped gateway, proxy,
+  self-hosted endpoint, test environment, or regional endpoint may use a valid
+  key only at its configured URL; silently dropping that URL sends the key to
+  the wrong backend and produces authentication failures or no traces.
+
+  For Docker Compose, preserve optional endpoint overrides explicitly alongside
+  the required identity variables, for example:
+
+  ```yaml
+  environment:
+    JUDGMENT_API_KEY: ${JUDGMENT_API_KEY:-}
+    JUDGMENT_ORG_ID: ${JUDGMENT_ORG_ID:-}
+    JUDGMENT_PROJECT_NAME: ${JUDGMENT_PROJECT_NAME:-my-agent}
+    JUDGMENT_API_URL: ${JUDGMENT_API_URL:-}
+    JUDGMENT_API_BASE: ${JUDGMENT_API_BASE:-}
+  ```
+
+  Before declaring the integration verified, compare the names of all
+  `JUDGMENT_*` variables present in the launcher with the names present inside
+  the real container/worker process, without printing their values. If a
+  launcher variable that affects routing is absent in the target runtime, the
+  production path is not configured or verified. A host dotenv file does not
+  automatically become container environment.
 
 #### Keep payload capture deliberate
 
