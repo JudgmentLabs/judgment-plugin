@@ -196,7 +196,14 @@ def set_rejected_turn_context(session_id: str, message: str) -> None:
     )
 
 @Tracer.observe(
-    span_type="agent",
+    # span_type must be None here. In Judgeval 1.2, when fork=True runs under
+    # an ambient span that is visible in Judgment's context (for example ASGI
+    # instrumentation wired through the Judgment provider), the SDK creates
+    # BOTH a parent-side invocation span and the fresh linked root, and applies
+    # span_type to both — producing a second agent-kind span with no semantic
+    # IO. Leave span_type=None and set the kind on the business root only,
+    # via the guarded set_span_kind call below.
+    span_type=None,
     span_name="app.chat_turn",
     record_input=False,
     record_output=False,
@@ -208,6 +215,12 @@ def set_rejected_turn_context(session_id: str, message: str) -> None:
     fork=True,
 )
 def traced_turn(session_id: str, message: str) -> TurnOutcome:
+    try:
+        # First trace-only operation: mark the linked business root as the
+        # agent root. Guarded so a telemetry fault cannot break the request.
+        Tracer.set_span_kind("agent")
+    except Exception:
+        pass
     try:
         validate_request_and_session(session_id, message)
     except Exception as exc:
@@ -258,10 +271,11 @@ guarded manual scope.
 Every telemetry-only active-span lookup, sanitizer/classifier,
 IO/attribute/status setter, finalizer, reporter, and flush must occur inside the
 fail-open callback. Do not perform a current-span lookup first and guard only the
-later write. Fault a rename or explicit span-type/kind setter only if the final
-implementation actually invokes it; `@Tracer.observe(span_type=...)` does not
-require a redundant setter. Prove each used operation leaves the real
-request/model/tool path single-run. Use only documented public APIs from the
+later write. The copyable recipe sets the root's kind with a guarded
+`Tracer.set_span_kind("agent")` as the first trace-only operation, so a
+span-kind-setter fault injection is mandatory: prove a raising setter leaves the
+application path running exactly once with an unchanged response. Prove each
+used operation leaves the real request/model/tool path single-run. Use only documented public APIs from the
 pinned installed SDK; an underscored/private module, method, context store, or
 span mutator is forbidden unless the exact version is locked and a
 production-shaped executable conformance test proves its behavior.
@@ -449,7 +463,13 @@ interval. Record read timestamps and a span-set hash. Missing or changing data
 stays `blocked`; a single successful query is not settled evidence.
 
 Inspect raw attributes for every span in the matching session. Reconcile the
-request ledger to exactly one business root per request and prove root
+request ledger to exactly one business root per request admitted to
+application/session validation, and require zero business roots for
+transport-auth or basic-shape rejections. When `fork=True` runs under an
+ambient span visible in Judgment's context, the SDK also emits one generic
+kind-less link/invocation span per turn: it is not a business root, carries no
+application session or semantic IO, and is reconciled separately using its
+Judgment link source/target IDs. Prove root
 input/output, child windows, exact session ID,
 tool error status, no readback roots, and post-restart export. Search all raw
 attribute values—not only UI previews—for all credential canaries, histories,
