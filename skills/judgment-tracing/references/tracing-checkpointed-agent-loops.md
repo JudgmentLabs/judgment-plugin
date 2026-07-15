@@ -15,6 +15,9 @@ the trace. The overall run is a Judgment session containing those traces.
 For a checkpointed loop:
 
 - One completed durable iteration is one trace.
+- Use a stable application-specific root name such as `hermes.iteration`, not
+  the literal generic name `agent.iteration` and not one name per iteration
+  number. Put iteration number and decision type in attributes/root IO.
 - The root begins before the iteration's model decision and ends after its
   action/result/error and updated state are durably saved.
 - `judgment.session_id` is the stable run ID on every iteration root.
@@ -32,22 +35,22 @@ Example:
 ```text
 session_id = run_id
 
-trace agent.iteration.plan
+trace hermes.iteration (decision_type=plan)
   root input: goal + iteration + bounded state summary
   child: LLM decision
   root output: decision=plan + plan item count
 
-trace agent.iteration.tool
+trace hermes.iteration (decision_type=tool)
   root input: goal + iteration + bounded state summary
   child: LLM decision
   child: search tool
   root output: decision=tool + tool name + bounded result metadata
 
-trace agent.iteration.compact
+trace hermes.iteration (decision_type=compact)
   child: LLM decision
   root output: decision=compact + before/after state sizes
 
-trace agent.iteration.finish
+trace hermes.iteration (decision_type=finish)
   child: LLM decision
   child: final report write when applicable
   root output: decision=finish + completed status + result path/size
@@ -143,7 +146,8 @@ async step(run: RunState): Promise<RunState> {
     },
     {
       spanType: "agent",
-      spanName: `agent.iteration.${run.iteration}`,
+      // Replace "hermes" with this application's stable name.
+      spanName: "hermes.iteration",
       recordInput: false,
       recordOutput: false,
       // Judgeval 1.2.1 supports this. Confirm the installed version before use.
@@ -163,10 +167,10 @@ the same option. If it is unavailable, use that version's documented
 fresh/linked-trace primitive or explicit context detachment. Plain observation
 with the default `fork: false` does not break an inherited HTTP parent chain.
 
-When stable cardinality matters more than per-number names, use a stable root
-name such as `agent.iteration` and record iteration number plus decision type
-as attributes. If the decision type is known only after the LLM returns, set an
-attribute or update the root output; do not create a second root.
+Use a stable application-specific root name such as `hermes.iteration` and
+record iteration number plus decision type as attributes. If the decision type
+is known only after the LLM returns, set an attribute or update the root output;
+do not create a second root or put the iteration number in the span name.
 
 ## Model and tool children
 
@@ -308,6 +312,7 @@ SDK wiring only.
 | Root evidence | Each root has bounded faithful input/output and contains all children |
 | Session continuity | Exact durable run ID is on every root before and after restart |
 | Restart survival | Last completed pre-kill and first post-resume iterations both arrive |
+| Process evidence | A process/container instance attribute changes across restart while the durable session ID remains stable, unless the runtime provides an equivalent independently verified marker |
 | Decision coverage | Plan/tool/compaction/retry/finish outcomes are visible |
 | LLM coverage | Real model spans include provider/model/tokens/cost |
 | Tool coverage | Every executed business tool has one useful bounded child span |
