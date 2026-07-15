@@ -195,6 +195,41 @@ Trace short producer writes separately from durable execution:
 - Cancellation or retry-control writes: their own traces when operationally
   meaningful.
 
+For Python FastAPI/Starlette producers, do not assume that initializing
+Judgeval in the lifespan coroutine activates the tracer in request tasks.
+Judgeval 1.2.x stores the active tracer in a context variable. A lifespan task
+and a request task can therefore use different active-tracer contexts even
+inside one process.
+
+Prefer initializing and retaining the tracer in the module, app factory, or
+server entrypoint after environment loading but before the server creates its
+lifespan and request tasks. Use lifespan for shutdown rather than as the first
+activation site. A representative shape is:
+
+```python
+settings = get_settings()  # load dotenv/config before Tracer.init reads it
+JUDGMENT_TRACER = Tracer.init(
+    project_name=settings.judgment_project_name,
+)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    Tracer.shutdown()
+
+app = FastAPI(lifespan=lifespan)
+```
+
+When framework constraints require lifespan initialization, keep the returned
+tracer and call its documented `set_active()` at the beginning of each request
+or consumer task before any application root is active. Do not switch providers
+in the middle of a trace. Match this to the installed SDK and middleware
+ordering.
+
+The proof is not a startup log: execute one real submission and one real
+approval, then find both stored roots by the exact workflow ID. Worker activity
+traces do not prove that the producer request context is active.
+
 Do not use a framework-wide HTTP instrumentor without filtering. Health checks
 and high-frequency `GET /status` polling can create dozens of roots for every
 few meaningful workflow traces. Exclude them, sample them separately, or keep
@@ -297,6 +332,7 @@ Before saying the tracing task is complete, report evidence for each row:
 | --- | --- |
 | Workflow model | Stable workflow ID, durable checkpoints, and chosen trace units are named |
 | Request separation | Submit/approve writes are separate from durable worker execution |
+| Producer activation | A real submit and approval root prove that the producer's request-task context uses the initialized tracer; worker exports alone do not satisfy this gate |
 | Fresh activity roots | Fallback activity/phase roots have trace IDs distinct from the submit request and are not children of Temporal interceptor shells |
 | Root lifetime | Raw duration arithmetic shows every child inside its root |
 | Session placement | Exact workflow ID is stored on every meaningful root, not only children |

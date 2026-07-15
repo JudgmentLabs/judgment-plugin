@@ -199,6 +199,13 @@ modules can load separate copies of a tracing library or evaluate modules before
 asynchronous initialization finishes.
 
 - Initialize once in the framework's supported server or worker startup path.
+- In Python Judgeval 1.2.x, the active tracer is context-local. Calling
+  `Tracer.init()` inside a FastAPI/Starlette lifespan task does not prove that
+  sibling request tasks inherit that active tracer. Keep the returned tracer
+  and activate it inside each request/consumer task before decorated business
+  work begins, or initialize it in an ancestor context that is proven to be
+  copied into those tasks. Match the installed SDK's `set_active` API and treat
+  a failed activation as observable configuration failure.
 - Do not create decorators or wrappers at module load time if they can bind to a
   no-op provider before tracer initialization completes. Initialize first or
   defer binding until the real request executes.
@@ -216,6 +223,11 @@ asynchronous initialization finishes.
   both contain plausible data.
 - Treat every process that performs important work as a separate runtime that
   needs deliberate initialization and export lifecycle handling.
+- Treat every independent async task family as a context boundary too. One
+  process can export worker spans correctly while request handlers in that same
+  process silently use a no-op tracer. Exercise and inspect at least one stored
+  trace from each important entrypoint rather than inferring activation from a
+  different route or worker.
 - If the app runs in Docker, a worker platform, or another deployment wrapper,
   treat the complete Judgment connection configuration as one deployment unit.
   Forward `JUDGMENT_API_KEY`, `JUDGMENT_ORG_ID`, the intended project name, and
