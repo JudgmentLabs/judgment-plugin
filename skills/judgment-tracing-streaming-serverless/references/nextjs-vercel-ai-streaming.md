@@ -106,6 +106,12 @@ verification, compare the names of the `JUDGMENT_*` variables in the launcher
 with the names inside the running process. An omitted endpoint override can
 send valid credentials to the wrong backend.
 
+After building the production bundle, run its real launcher with the project
+explicitly empty under a 30-second supervisor that always terminates the
+process/container. It must exit nonzero with the expected missing-project error
+before readiness. `unset`, timeout, continued serving, or an unrelated failure
+does not pass.
+
 ## 3. Start a manually controlled active root
 
 Create the stream while the application root is active so the Vercel AI SDK
@@ -113,17 +119,45 @@ tracer inherits it. Set session and customer context only after the root is
 active.
 
 ```typescript
-let asynchronousFailure: unknown;
+function reportTelemetryFailure(label: string, error: unknown): void {
+  try {
+    const kind = error instanceof Error ? error.name : "Error";
+    console.error(`Judgment ${label} failed (${kind})`);
+  } catch {
+    // A telemetry reporter is also telemetry and must remain fail-open.
+  }
+}
+
+function bestEffortTraceWrite(label: string, write: () => void): void {
+  try {
+    // Keep trace-only sanitization inside this callback too.
+    write();
+  } catch (error) {
+    reportTelemetryFailure(label, error);
+  }
+}
+
+type TraceErrorCategory =
+  | "stream_failed"
+  | "stream_construction_failed"
+  | "persistence_failed";
+
+let asynchronousFailure:
+  | { error: unknown; code: TraceErrorCategory }
+  | undefined;
+let cancellationRequested = false;
 const result = Tracer.getOTELTracer().startActiveSpan(
   // Use this application's stable business name, not a generic copied name.
   "deskflow.turn",
   (rootSpan) => {
-    Tracer.setSpanKind("agent", rootSpan);
-    Tracer.setSessionId(session.id);
-    Tracer.setCustomerId(session.customerId);
-    Tracer.setInput({
-      message: sanitizeAndBoundTraceText(userMessage),
-    }, rootSpan);
+    bestEffortTraceWrite("root input", () => {
+      Tracer.setSpanKind("agent", rootSpan);
+      Tracer.setSessionId(session.id);
+      Tracer.setCustomerId(session.customerId);
+      Tracer.setInput({
+        message: sanitizeAndBoundTraceText(userMessage),
+      }, rootSpan);
+    });
 
     return streamText({
       // Keep the existing model, messages, tools, and generation settings.
@@ -134,43 +168,81 @@ const result = Tracer.getOTELTracer().startActiveSpan(
         recordOutputs: false,
       },
       async onFinish({ response, text }) {
+        // Cancellation wins a late success callback. If the existing app
+        // intentionally continues after disconnect, trace that detached work
+        // as a separate durable unit instead of persisting it as this turn.
+        if (cancellationRequested) return;
+
+        let persistenceFailure: unknown;
         try {
           await persistCompletedTurn(response);
-          Tracer.setOutput({
-            text: sanitizeAndBoundTraceText(text),
-          }, rootSpan);
         } catch (error) {
-          // Keep the original only in memory for the terminal finalizer. The
-          // stored trace receives a normalized code, not raw DB/provider text.
-          asynchronousFailure = error;
-          Tracer.setError(safeTraceError(error), rootSpan);
+          // Application behavior is decided below, outside trace-only writes.
+          asynchronousFailure = { error, code: "persistence_failed" };
+          persistenceFailure = error;
+        }
+
+        if (persistenceFailure === undefined) {
+          bestEffortTraceWrite("root output", () => Tracer.setOutput({
+            text: sanitizeAndBoundTraceText(text),
+          }, rootSpan));
+          return;
+        }
+
+        bestEffortTraceWrite("persistence error", () => {
+          Tracer.setError(safeTraceError("persistence_failed"), rootSpan);
           Tracer.setOutput({
             status: "error",
-            errorCode: safeTraceErrorCode(error),
+            errorCode: "persistence_failed",
           }, rootSpan);
-        }
+        });
+
+        // Preserve the pre-instrumentation rethrow, recovery/report, or
+        // intentional-swallow outcome exactly. This is application code, not
+        // telemetry, and receives the original in-memory error.
+        await preserveExistingPersistenceFailureBehavior(persistenceFailure);
       },
       onError({ error }) {
-        Tracer.setError(safeTraceError(error), rootSpan);
-        Tracer.setOutput({
-          status: "error",
-          errorCode: safeTraceErrorCode(error),
-        }, rootSpan);
+        bestEffortTraceWrite("stream error", () => {
+          Tracer.setError(safeTraceError("stream_failed"), rootSpan);
+          Tracer.setOutput({
+            status: "error",
+            errorCode: "stream_failed",
+          }, rootSpan);
+        });
       },
       onAbort() {
-        Tracer.setAttribute("agent.aborted", true, rootSpan);
-        Tracer.setOutput({ status: "aborted" }, rootSpan);
+        bestEffortTraceWrite("abort outcome", () => {
+          Tracer.setAttribute("agent.aborted", true, rootSpan);
+          Tracer.setOutput({ status: "aborted" }, rootSpan);
+        });
       },
     });
   },
 );
 ```
 
-Also handle a synchronous `streamText(...)` construction failure: set a
-bounded semantic error output and sanitized error status, end the root, and
-await the same bounded export path from an outer `catch`/`finally`. A throw
-before the completion callbacks are registered must not leave an open root or
-an error root with missing `judgment.output`.
+`preserveExistingPersistenceFailureBehavior` denotes the application's
+pre-instrumentation branch, not a new tracing policy hook. Replace that line
+with the existing rethrow, retry/report, or intentional-swallow behavior
+unchanged; only the safe trace recording is new. If the existing branch fully
+recovers, clear the in-memory terminal failure and record the recovered result.
+If it intentionally continues with unresolved persistence failure, retain a
+safe failure outcome without adding a throw. Tracing does not choose either
+policy.
+
+Make the cancellation check part of the persistence commit, or pass the abort
+signal into persistence, so a cancellation racing with `onFinish` cannot commit
+a success/tool-call message after the check. Do not invent detached completion;
+preserve it only when the application already documents that behavior, and then
+trace the detached work separately.
+
+Also handle a synchronous `streamText(...)` construction failure: retain the
+original exception in memory, record the bounded outcome through
+`bestEffortTraceWrite`, best-effort end/flush from the outer owner, then preserve
+the application's original rethrow/recovery behavior. A sanitizer, setter, or
+finalizer failure must not replace that exception or leave application work to
+be retried by tracing.
 
 `sanitizeAndBoundTraceText` and `persistCompletedTurn` are placeholders: replace
 them with the application's real sanitization and persistence behavior. Do not
@@ -185,114 +257,34 @@ semantic representation of the current user message and final answer; character
 counts plus an omission marker are privacy-safe but behavior-blind. An
 omit-only root is an incomplete integration, not a successful completion gate.
 
-Choose and document one of three modes:
+Leave margin below storage clipping. A 2,000-character text value can exceed a
+2,000-character stored attribute after JSON keys/quotes are added and be clipped
+into invalid JSON. Prefer smaller structured fields (for example, a 1,500-char
+free-text ceiling) and verify the settled raw `judgment.input` and
+`judgment.output` still parse; do not treat sanitizer output as storage proof.
 
-1. **Existing approved sanitizer:** use the application's established policy,
-   then apply a hard bound.
-2. **Conservative tracing baseline:** when autonomous instrumentation is
-   expected and the repository has no sanitizer, add a narrowly scoped
-   application-owned trace redactor for common credential/auth patterns, apply
-   it before a hard bound, and mark application privacy review as required.
-   This is a useful baseline, not a claim of universal secret/PII safety.
-3. **Strict omission:** when repository policy forbids adding a baseline,
-   retain only safe metadata and `omitted: "policy-blocked"`, then report root
-   IO and behavior evaluation as blocked. Do not call the task complete.
+Choose an approved sanitizer, a conservative credential/auth baseline requiring
+privacy review, or strict omission (which blocks semantic evidence). Sanitize
+the final composed value before bounding. The conservative matrix must cover
+API/provider-key prefixes, authorization, cookies/sessions, secret assignments,
+URL credentials, and private-key blocks with non-real canaries before and
+beyond the bound and in output/error fields. A benign semantic marker must
+survive while every canary is absent from settled raw attributes. Do not claim
+that this baseline covers general PII or domain secrets.
 
-Never silently substitute a helper that only calls `slice` or `substring`.
-The conservative baseline must at least cover the credential and authorization
-classes exercised by its tests, remain small enough to review, and clearly
-state that application-specific PII or domain secrets need a product decision.
-A representative adapter is:
+Normalize trace errors without storing raw exception text:
 
 ```typescript
-type SafeTraceText = {
-  text?: string;
-  originalCharacters: number;
-  truncated?: boolean;
-  policy: "approved" | "conservative-baseline" | "strict-omission";
-  omitted?: "policy-blocked";
-};
-
-function getTraceTextPolicy(): "conservative-baseline" | "strict-omission" {
-  return process.env.JUDGMENT_TRACE_TEXT_POLICY === "strict-omission"
-    ? "strict-omission"
-    : "conservative-baseline";
-}
-
-function conservativeTraceRedactor(value: string): string {
-  return value
-    .replace(
-      /\b(?:sk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b/g,
-      "[REDACTED_CREDENTIAL]",
-    )
-    .replace(
-      /\b(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}\b/gi,
-      "$1 [REDACTED]",
-    )
-    .replace(
-      /\b(Authorization\s*:\s*)[^\r\n]+/gi,
-      "$1[REDACTED]",
-    )
-    .replace(
-      /\b((?:password|token|secret|api[_-]?key)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
-      "$1[REDACTED]",
-    );
-}
-
-function sanitizeAndBoundTraceText(value: string, max = 2_000): SafeTraceText {
-  const approved = getApprovedTelemetrySanitizer();
-  const policy = getTraceTextPolicy();
-  if (!approved && policy === "strict-omission") {
-    return {
-      originalCharacters: value.length,
-      policy,
-      omitted: "policy-blocked",
-    };
-  }
-
-  const sanitizer = approved ?? conservativeTraceRedactor;
-  const redacted = sanitizer(value); // redaction always runs before bounding
-  return {
-    text: redacted.length <= max ? redacted : `${redacted.slice(0, max)}…`,
-    originalCharacters: value.length,
-    truncated: redacted.length > max,
-    policy: approved ? "approved" : "conservative-baseline",
-  };
-}
-
-function safeTraceError(error: unknown): Error {
-  const name = error instanceof Error ? error.name : "Error";
-  const message = error instanceof Error ? error.message : String(error);
-  const safe = sanitizeAndBoundTraceText(message, 500);
-  return new Error(
-    safe.text ? `${name}: ${safe.text}` : `${name}: message omitted from tracing`,
-  );
-}
-
-function safeTraceErrorCode(error: unknown): string {
-  const name = error instanceof Error ? error.name : "Error";
-  return /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name) ? name : "Error";
+function safeTraceError(code: TraceErrorCategory): Error {
+  return new Error(code);
 }
 ```
 
-Do not claim that a short regex is universally safe. A conservative baseline
-for `sk-…`, `ghp_…`, bearer credentials, authorization headers, and
-`password|token|secret|api_key = …` still needs application review and tests.
-What makes it acceptable as an instrumentation baseline is the explicit
-limited policy, useful retained semantics, and adversarial raw-attribute test;
-it is not a substitute for the application's PII and domain-secret policy.
-
-Test the selected mode before live traffic. For approved or conservative mode,
-require a benign marker to survive, all in-bound and out-of-bound synthetic
-credential canaries to disappear, and the stored value to stay within the hard
-bound. For strict omission, assert `text` is absent and
-`omitted === "policy-blocked"`, and report the usefulness gate as failed. The
-same policy applies to the final answer and error paths.
-
-Apply the same policy to recorded errors. Provider and tool errors can embed a
-request URL, headers, or an echo of the input. When they can, pass
-`Tracer.setError` a sanitized bounded message or an error class plus safe
-metadata, not the raw error object.
+Use stable application-owned error categories, not the raw exception message
+or only its JavaScript class name. Add narrower categories when the application
+can distinguish them safely. Provider and tool errors can embed a request URL,
+headers, or an echo of the input; never pass the raw error object to
+`Tracer.setError`.
 
 The Vercel AI SDK can otherwise record accumulated conversation history,
 system prompts, tool schemas, and full tool payloads on every step. Keep
@@ -307,9 +299,11 @@ not leave a tool span with no useful input:
 
 ```typescript
 async execute({ orderId }) {
-  Tracer.setInput({ orderId });
+  bestEffortTraceWrite("tool input", () => Tracer.setInput({ orderId }));
   const order = await getOrder(orderId);
-  Tracer.setOutput({ orderId, found: order != null });
+  bestEffortTraceWrite("tool output", () => {
+    Tracer.setOutput({ orderId, found: order != null });
+  });
   return order;
 }
 ```
@@ -322,14 +316,16 @@ framework span and a live trace proves it is the tool span, updating that span's
 name to a stable business name is preferable to leaving only `ai.toolCall`:
 
 ```typescript
-const toolSpan = Tracer.getCurrentSpan();
-toolSpan?.updateName("deskflow.tool.lookup_order");
+bestEffortTraceWrite("tool name", () => {
+  const toolSpan = Tracer.getCurrentSpan();
+  toolSpan?.updateName("deskflow.tool.lookup_order");
+});
 ```
 
 Keep the framework's business-name attribute as well. If active-span identity
 or `updateName` support is uncertain, retain the framework span and its
-`ai.toolCall.name` attribute; teach the verifier/rendering layer to resolve that
-attribute instead of creating a duplicate manual span.
+`ai.toolCall.name` attribute and report the scanability limitation. Do not
+create a duplicate manual span merely to improve the displayed name.
 
 ## 4. Finalize after the framework telemetry span, then flush
 
@@ -378,44 +374,74 @@ async function flushWithoutBreakingTheCompletedResponse(): Promise<void> {
   } catch (error) {
     // Keep this observable. The real-path trace check must fail when export
     // fails, but telemetry failure must not corrupt an otherwise valid reply.
-    console.error("Judgment export flush failed", error);
+    reportTelemetryFailure("export flush", error);
   } finally {
     if (timer) clearTimeout(timer);
+  }
+}
+
+function bestEffortEndRoot(): void {
+  try {
+    rootSpan.end();
+  } catch (error) {
+    reportTelemetryFailure("root end", error);
   }
 }
 
 type TerminalOutcome =
   | { status: "completed" }
   | { status: "cancelled" }
-  | { status: "error"; error: unknown };
+  | { status: "error"; error: unknown; code: TraceErrorCategory };
 
 const finalize = (outcome: TerminalOutcome): Promise<void> => {
   return (finalization ??= (async () => {
-    try {
-      const terminal: TerminalOutcome =
-        outcome.status === "completed" && asynchronousFailure !== undefined
-          ? { status: "error", error: asynchronousFailure }
-          : outcome;
-      if (terminal.status === "error") {
-        Tracer.setError(safeTraceError(terminal.error), rootSpan);
+    const terminal: TerminalOutcome =
+      outcome.status === "completed" && asynchronousFailure !== undefined
+        ? {
+            status: "error",
+            error: asynchronousFailure.error,
+            code: asynchronousFailure.code,
+          }
+        : outcome;
+    if (terminal.status === "error") {
+      bestEffortTraceWrite("terminal error", () => {
+        Tracer.setError(safeTraceError(terminal.code), rootSpan);
         Tracer.setOutput({
           status: "error",
-          errorCode: safeTraceErrorCode(terminal.error),
+          errorCode: terminal.code,
         }, rootSpan);
-      } else if (terminal.status === "cancelled") {
+      });
+    } else if (terminal.status === "cancelled") {
+      bestEffortTraceWrite("terminal cancellation", () => {
         Tracer.setAttribute("agent.response_cancelled", true, rootSpan);
         Tracer.setOutput({ status: "cancelled" }, rootSpan);
-      }
-    } finally {
-      rootSpan.end();
-      await flushWithoutBreakingTheCompletedResponse();
+      });
     }
+
+    // Bind this to the installed SDK's existing-consumer completion signal.
+    // It must prove the ai.streamText span ended; onFinish/onAbort, a sleep, or
+    // a second consumeStream() branch is not sufficient.
+    try {
+      await waitForFrameworkTelemetryWithoutBreakingResponse();
+    } catch (error) {
+      // The trace is not verified, but finalization still cannot change the
+      // application response or cancellation outcome.
+      reportTelemetryFailure("framework telemetry barrier", error);
+    }
+
+    // Neither operation may reject or change controller.close/error/cancel.
+    bestEffortEndRoot();
+    await flushWithoutBreakingTheCompletedResponse();
   })());
 };
 
 const abortUpstream = (reason?: unknown) => {
-  Tracer.setAttribute("agent.response_cancelled", true, rootSpan);
+  // Application cancellation comes first. Telemetry cannot delay it.
+  cancellationRequested = true;
   if (!abortController.signal.aborted) abortController.abort(reason);
+  bestEffortTraceWrite("abort requested", () => {
+    Tracer.setAttribute("agent.response_cancelled", true, rootSpan);
+  });
 };
 
 return { result, finalize, abortUpstream };
@@ -444,7 +470,7 @@ const body = new ReadableStream<Uint8Array>({
       controller.close();
     } catch (error) {
       try {
-        await finalize({ status: "error", error });
+        await finalize({ status: "error", error, code: "stream_failed" });
       } finally {
         controller.error(error);
       }
@@ -455,7 +481,11 @@ const body = new ReadableStream<Uint8Array>({
     try {
       await reader.cancel(reason);
     } finally {
-      await finalize({ status: "cancelled" }).catch(() => undefined);
+      // Defense in depth: cancellation must remain fail-open even if a future
+      // edit accidentally makes finalization reject.
+      await finalize({ status: "cancelled" }).catch((error) => {
+        reportTelemetryFailure("cancel finalization", error);
+      });
     }
   },
 });
@@ -476,6 +506,24 @@ implements these branches with an internal tee; the extra consumer removes
 backpressure and can let generation, tools, and `onFinish` persistence continue
 after the client cancels. That is both an application-behavior bug and a false
 tracing-lifecycle proof.
+
+`waitForFrameworkTelemetryWithoutBreakingResponse` is a bounded, fail-open
+adapter around a real settlement signal in the installed AI SDK/runtime. It
+must use the response's existing consumer and resolve only after the framework
+`ai.streamText` span ends on success, error, and abort. Do not implement it with
+`onFinish`, `onAbort`, `setTimeout`, or `result.consumeStream()` beside the
+response consumer. If the installed version exposes no binding signal, report
+the child-window gate blocked rather than ending the root early and calling it
+complete. This recipe does not claim that AI SDK 5/6 exposes one universal
+public barrier; do not invent one from a private hook, delay, or unverified
+callback. Raw timestamps must show every framework child ending at or before
+the application root.
+
+Inspect the installed getter implementation too: in some AI SDK 6 releases,
+reading result promises such as `finishReason` starts `consumeStream()` and can
+create the second-consumer problem. Do not use such a promise as the barrier
+unless source inspection and a cancellation test prove it reuses the existing
+consumer.
 
 Verify this with a real client abort while a read is pending. The server must
 stop upstream work according to the application's cancellation contract, the
@@ -527,19 +575,9 @@ instrumented.
 6. Start it again and send another turn in the same session when the app
    supports restart continuity.
 7. Inspect stored traces for the exact session ID or unique marker.
-8. Repeat with a long input containing a unique benign marker plus multiple
-   non-real credential-shaped canaries (for example an API-key shape, a bearer
-   value, and a password/token assignment). Place the benign marker and at
-   least one canary inside the portion that survives the documented size bound,
-   and at least one canary beyond it. Read the settled raw attribute value, not
-   only a platform preview that may visually redact it. If an approved
-   or conservative baseline is active, require the benign marker to remain,
-   every canary—including the in-bound ones—to be absent, and the stored value
-   to stay within the documented maximum plus any truncation marker. If strict
-   omission is required, include an arbitrary unique marker and require all
-   free-form text to be absent, but record that root usefulness remains blocked.
-   Also trigger one failing turn carrying the same synthetic canaries and
-   confirm that settled raw error attributes exclude them.
+8. Run the full canary matrix above through a long input and failing turn, then
+   inspect settled raw attributes rather than UI previews. Confirm input and
+   output remain parseable after platform storage clipping.
 
 Both turns must arrive. Each trace must have a non-zero-duration application
 root with final bounded input/output and the expected session/customer data.
@@ -547,29 +585,36 @@ The root must contain the AI SDK model/tool spans, and its time window must
 contain their work. A zero-duration root, a missing last child, separate root
 and framework trace IDs, or no trace at all is a failed integration.
 
+Prove parentage from raw IDs, not the rendered waterfall. Record application
+root and model/tool `trace_id`, `span_id`, and `parent_span_id` values. Require
+an empty root parent when no intentional upstream context exists. With
+deliberate W3C/distributed propagation, record the expected upstream IDs and
+prove the local root still owns the complete local stream lifetime, session,
+and semantic IO. A short accidental HTTP parent is not passing; a config flag
+or matching span names is not binding proof.
+
 ## Mandatory completion gate
 
-Before saying the task is complete, report evidence for every row. If live
-credentials or trace access are unavailable, say that live verification is
-blocked; do not replace it with “you should see traces.”
+Use `not-applicable` only when the architecture genuinely lacks a gate. Missing
+credentials, traffic, or stored evidence is `blocked`; stubs are synthetic.
 
-| Gate | Required evidence |
-| --- | --- |
-| SDK/runtime match | Installed `ai` major and Next runtime are identified; the 5/6 Node text-stream sample is not copied into AI SDK 7, Edge, or UI-stream code |
-| Shared runtime | Existing Next config preserves its settings and includes `judgeval` in `serverExternalPackages`; production output does not bundle independent Judgeval runtimes for startup and route code |
-| Initialization | `Tracer.init()` runs from the supported server startup hook before real requests |
-| Complete configuration | Key, org, explicit intended project, and every endpoint override supported by the installed SDK (including `JUDGMENT_API_URL` when present) are forwarded into the real runtime |
-| Correct boundary | One application root represents the completed streamed turn, not stream construction |
-| Name quality | The application root and any manual spans use stable business-specific names rather than copied generic placeholders |
-| Parentage | AI SDK model/tool spans and meaningful manual spans share the application's trace ID |
-| Context | Exact stable session/customer identifiers are set inside the active root |
-| Payload safety and usefulness | The report identifies the approved sanitizer, conservative baseline with required privacy review, or strict-omission blocker. For an integration claimed complete, settled full raw attributes retain the benign semantic marker, remove in-bound and out-of-bound credential canaries, remain bounded, and exclude histories, schemas, documents, files, and secrets. Omit-only metadata does not pass the usefulness half of this gate |
-| Tool usefulness | Every executed business tool retains its identity plus bounded semantic input and output-or-error after automatic capture is disabled |
-| Finalization | Persistence and final output complete before framework telemetry closes; the application root ends afterward |
-| Export lifecycle | A bounded awaited `Tracer.forceFlush()` attempt completes before response EOF, or is attached to a deployment lifecycle primitive proven to survive the tested freeze/restart behavior; exporter failure is visible without corrupting a valid application reply |
-| Error and cancellation | Stream errors and client cancellation are recorded on the root; a real abort signal stops upstream work before finalization |
-| Real-path proof | A production-style model/tool request is found in Judgment by its exact session ID or unique marker |
-| Restart proof | When the application supports restart continuity, the completed pre-restart turn and first post-restart turn both arrive intact; otherwise report this gate as not applicable |
+| Gate | Result | Evidence class | Exact evidence |
+| --- | --- | --- | --- |
+| Framework/runtime match | <result> | static | Installed `ai` major plus Next.js Node `streamText` text-response path |
+| Shared runtime | <result> | static | Preserved config plus production bundle resolution showing one Judgeval runtime |
+| Initialization | <result> | real application | Real launcher log/order proving initialization before readiness and requests |
+| Complete configuration | <result> | static | Resolved launcher variable names for key, org, explicit project, and configured endpoint overrides |
+| Explicit routing negative | <result> | real application | Exact explicit-empty real-launcher command, nonzero exit, and expected error |
+| Correct boundary | <result> | stored Judgment | Application root trace ID, duration, final IO, and terminal callback evidence |
+| Root parentage | <result> | stored Judgment | Root/model/tool trace-span-parent IDs plus expected upstream chain or empty-parent proof |
+| Context | <result> | stored Judgment | Exact session/customer IDs on each root before and after restart |
+| Payload safety and usefulness | <result> | stored Judgment | Named mode, benign/canary raw search, bounds, and inspected attribute set |
+| Tool usefulness | <result> | stored Judgment | Executed business tool names and bounded semantic input/output-or-error |
+| Finalization | <result> | real application | Event order for persistence, framework telemetry close, root end, and response EOF |
+| Export lifecycle | <result> | stored Judgment | Trace ID surviving the tested EOF/freeze/restart after bounded flush |
+| Error and cancellation | <result> | real application | Error/abort requests proving original persistence policy and stopped upstream work |
+| Stored terminal outcomes | <result> | stored Judgment | Trace IDs and raw root outcomes for success, model error, persistence error, and abort |
+| Restart proof | <result> | stored Judgment | Completed pre-restart and first post-restart trace IDs, or architectural reason for not-applicable |
 
 Builds, typechecks, unit tests, synthetic spans, and successful HTTP responses
 are useful checks, but none independently satisfy the real-path or restart

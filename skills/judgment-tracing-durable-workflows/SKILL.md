@@ -40,7 +40,8 @@ verified or complete.
 ## Non-negotiable implementation gates
 
 1. Require an explicit project and propagate key, organization, project, and
-   endpoint overrides into the producer and every exporting worker.
+   endpoint overrides into the producer and every exporting worker. Prove the
+   real launcher rejects an explicitly empty project even when dotenv exists.
 2. Keep workflow code replay-safe; do not call networked tracing APIs from
    deterministic workflow code.
 3. Use a provider integration only after its installed-version capture
@@ -73,6 +74,6 @@ work, retry, and worker restart. Inspect stored Judgment roots and prove:
   exclusion checks; and
 - no root was acknowledged before its bounded export attempt completed.
 
-Label static, synthetic, real-application, and stored-platform evidence
-separately in the final report. Use `pass`, `fail`, or `blocked` for each gate;
-a stubbed activity/provider is synthetic and cannot prove the real workflow.
+Report the focused reference's table with `pass`, `fail`, `blocked`, or
+`not-applicable` and one evidence class: static, synthetic, real application,
+or stored Judgment. Missing evidence is `blocked`.

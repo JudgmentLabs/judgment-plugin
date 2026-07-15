@@ -49,14 +49,16 @@ non-empty status object sufficient.
    the UUID to every iteration root and report the limitation. Do not use only
    hostname plus PID; both may repeat after a container restart.
 5. Require an explicit project and propagate complete routing into every loop
-   process.
+   process. Prove the real launcher rejects an explicitly empty project even
+   when dotenv exists.
 6. Disable or avoid automatic provider capture that retains history, system
    prompts, schemas, files, or secrets in any metadata field.
 
 ## Completion gate
 
-Run a real multi-iteration agent through tools, compaction, a hard process
-restart, resume, and finish. Reconcile the durable iteration ledger with stored
+Run a real multi-iteration agent through tools, a hard process restart, resume,
+and its actual terminal branch. Exercise compaction and retry only when those
+branches exist. Reconcile persisted completed-iteration records with stored
 Judgment evidence and prove:
 
 - exactly one finalized root for every completed iteration;
@@ -69,6 +71,6 @@ Judgment evidence and prove:
   and
 - the final pre-kill iteration was exported before the process died.
 
-Separate static, synthetic, real-application, and stored-platform evidence in
-the final report with `pass`, `fail`, or `blocked` for each gate. Do not call a
-fake model run or missing raw-span inspection live/end-to-end evidence.
+Report the focused reference's table with `pass`, `fail`, `blocked`, or
+`not-applicable` and one evidence class: static, synthetic, real application,
+or stored Judgment. Missing evidence is `blocked`.

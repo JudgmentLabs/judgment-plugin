@@ -139,6 +139,35 @@ entrypoint, and set session context only after that root is active:
 from judgeval import Tracer
 from temporalio import activity
 
+def report_telemetry_failure(label: str, error: Exception) -> None:
+    try:
+        activity.logger.warning("Judgment telemetry failed: %s", label)
+    except Exception:
+        pass
+
+def best_effort_trace_write(label: str, write) -> None:
+    try:
+        write()  # Include trace-only sanitization/classification here.
+    except Exception as error:
+        report_telemetry_failure(label, error)
+
+def set_step_input(info, request) -> None:
+    Tracer.set_session_id(info.workflow_id)
+    Tracer.set_input({
+        "workflow_id": info.workflow_id,
+        "step_index": request.step.index,
+        "step_title": bounded_text(request.step.title),
+        "step_instruction": safe_step_instruction(request.step),
+        "attempt": info.attempt,
+    })
+
+def set_step_output(result) -> None:
+    Tracer.set_output({
+        "step_index": result.index,
+        "status": "completed",
+        "result_summary": safe_step_result_summary(result),
+        "tool_outcomes": safe_tool_outcomes(result.tool_calls),
+    })
 
 @activity.defn
 @Tracer.observe(
@@ -150,23 +179,15 @@ from temporalio import activity
 )
 async def execute_step(request):
     info = activity.info()
-    Tracer.set_session_id(info.workflow_id)
-    Tracer.set_input({
-        "workflow_id": info.workflow_id,
-        "step_index": request.step.index,
-        "step_title": bounded_text(request.step.title),
-        "step_instruction": safe_step_instruction(request.step),
-        "attempt": info.attempt,
-    })
+    best_effort_trace_write(
+        "execute-step input", lambda: set_step_input(info, request)
+    )
 
     result = await run_step(request)
 
-    Tracer.set_output({
-        "step_index": result.index,
-        "status": "completed",
-        "result_summary": safe_step_result_summary(result),
-        "tool_outcomes": safe_tool_outcomes(result.tool_calls),
-    })
+    best_effort_trace_write(
+        "execute-step output", lambda: set_step_output(result)
+    )
     return result
 ```
 
@@ -202,7 +223,39 @@ For Python Judgeval 1.2.x, a representative shape is:
 
 ```python
 import asyncio
+from dataclasses import dataclass
+from typing import cast
+
+from opentelemetry.trace import Status, StatusCode
 from temporalio import activity
+
+@dataclass
+class PlanOutcome:
+    # The original exception remains process memory only because automatic
+    # output capture is disabled on traced_plan.
+    result: PlanResult | None = None
+    error: Exception | None = None
+
+def set_plan_input(request: PlanRequest) -> None:
+    Tracer.set_session_id(request.workflow_id)
+    Tracer.set_input({
+        "workflow_id": request.workflow_id,
+        "goal": bounded_text(request.goal),
+        "attempt": activity.info().attempt,
+    })
+
+def set_plan_error(exc: Exception) -> None:
+    # Classification is trace-only and stays inside the fail-open guard.
+    code = classify_plan_error(exc)
+    Tracer.set_output({"status": "failed", "error_code": code})
+    Tracer.get_current_span().set_status(Status(StatusCode.ERROR, code))
+
+def set_plan_output(result: PlanResult) -> None:
+    Tracer.set_output({
+        "status": "completed",
+        "step_count": len(result.steps),
+        "plan": safe_plan_items(result.steps),
+    })
 
 @Tracer.observe(
     span_type="agent",
@@ -211,41 +264,46 @@ from temporalio import activity
     record_output=False,
     fork=True,
 )
-async def traced_plan(request: PlanRequest) -> PlanResult:
-    Tracer.set_session_id(request.workflow_id)
-    Tracer.set_input({
-        "workflow_id": request.workflow_id,
-        "goal": bounded_text(request.goal),
-        "attempt": activity.info().attempt,
-    })
-    result = await perform_plan(request)
-    Tracer.set_output({
-        "status": "completed",
-        "step_count": len(result.steps),
-        "plan": safe_plan_items(result.steps),
-    })
-    return result
+async def traced_plan(request: PlanRequest) -> PlanOutcome:
+    best_effort_trace_write(
+        "plan input", lambda: set_plan_input(request)
+    )
+    try:
+        result = await perform_plan(request)
+    except Exception as exc:
+        best_effort_trace_write(
+            "plan error", lambda: set_plan_error(exc)
+        )
+        return PlanOutcome(error=exc)
+
+    best_effort_trace_write(
+        "plan output", lambda: set_plan_output(result)
+    )
+    return PlanOutcome(result=result)
 
 @activity.defn(name="plan")
 async def plan_activity(request: PlanRequest) -> PlanResult:
     try:
         # The Judgment root ends when traced_plan returns or raises.
-        return await traced_plan(request)
+        outcome = await traced_plan(request)
+        if outcome.error is not None:
+            # Preserve Temporal's original retry/failure behavior, but only
+            # after the observed root has ended.
+            raise outcome.error
+        return cast(PlanResult, outcome.result)
     finally:
         try:
             flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
             if not flushed:
-                activity.logger.error(
-                    "Judgment flush timed out after plan activity attempt"
+                report_telemetry_failure(
+                    "plan flush", TimeoutError("flush timed out")
                 )
                 # Production policy may preserve the durable result/error, but
                 # tracing verification must mark this attempt not trace-safe.
-        except Exception:
+        except Exception as error:
             # Export failure blocks the experiment claim, but must not replace
             # the activity result or Temporal's original retryable exception.
-            activity.logger.exception(
-                "Judgment export failed after plan activity attempt"
-            )
+            report_telemetry_failure("plan flush", error)
 ```
 
 Apply the same completion barrier to successful and failed activity roots that
@@ -253,6 +311,9 @@ must survive an immediate worker kill. Do not put `force_flush()` inside
 `traced_plan`, launch it as fire-and-forget work, or wait until worker
 shutdown. Match the installed SDK signature; current Python Judgeval 1.2.x
 returns a boolean from `force_flush(timeout_millis)`.
+
+Use these best-effort helpers for setters, classifiers, reporters, finalization,
+and flush. They must not alter the durable outcome or retry.
 
 If raw activity exceptions are not approved trace data, do not rethrow them
 from inside the observed business function. Record a normalized semantic
@@ -319,6 +380,11 @@ The proof is not a startup log: execute one real submission and one real
 approval, then find both stored roots by the exact workflow ID. Worker activity
 traces do not prove that the producer request context is active.
 
+Run the real producer and every exporting worker separately with the project
+explicitly empty, a 30-second bound, and cleanup in `finally`. Each must fail
+with the expected configuration error before readiness; `unset` is invalid
+when dotenv can refill it.
+
 Do not use a framework-wide HTTP instrumentor without filtering. Health checks
 and high-frequency `GET /status` polling can create dozens of roots for every
 few meaningful workflow traces. Exclude them, sample them separately, or keep
@@ -381,6 +447,13 @@ credentials into every trace.
 - Do not duplicate framework-generated LLM or tool spans with a second manual
   span unless the framework span cannot carry the required evidence.
 
+Choose an approved sanitizer, a conservative credential/auth baseline requiring
+privacy review, or strict omission (which blocks semantic evidence). Exercise
+non-real API/provider-key, authorization, cookie/session, secret-assignment,
+URL-credential, and private-key canaries before/beyond the bound and through a
+real activity result/error and final synthesis. Search every raw attribute in
+the workflow session; repeated activities must not copy full workflow state.
+
 ## Mandatory real-path verification
 
 Unit tests and scratch spans do not prove a durable workflow integration.
@@ -417,20 +490,23 @@ interceptor should connect everything.
 
 ## Completion gate
 
-Before saying the tracing task is complete, report evidence for each row:
+Use `not-applicable` only when the architecture genuinely lacks a gate. Missing
+evidence is `blocked`; stubs and scratch spans are synthetic.
 
-| Gate | Required evidence |
-| --- | --- |
-| Workflow model | Stable workflow ID, durable checkpoints, and chosen trace units are named |
-| Request separation | Submit/approve writes are separate from durable worker execution |
-| Producer activation | A real submit and approval root prove that the producer's request-task context uses the initialized tracer; worker exports alone do not satisfy this gate |
-| Fresh activity roots | Fallback activity/phase roots have trace IDs distinct from the submit request and are not children of Temporal interceptor shells |
-| Root lifetime | Raw duration arithmetic shows every child inside its root |
-| Session placement | Exact workflow ID is stored on every meaningful root, not only children |
-| Suspend boundary | Work after approval/timer/signal starts a fresh trace |
-| Worker coverage | Every process that performs important work initializes and exports correctly |
-| Retry/replay | Attempts are labeled; no replay or double-instrumentation duplicates |
-| Signal density | Business spans outnumber or clearly dominate Temporal/HTTP/polling shells |
-| Payload safety | Raw stored attributes contain bounded, redacted semantic data only |
-| Export lifecycle | Completed work survives the tested worker kill/restart |
-| Real-path proof | Stored traces for the exact workflow ID match the actual scenario ledger |
+| Gate | Result | Evidence class | Exact evidence |
+| --- | --- | --- | --- |
+| Workflow model | <result> | static | Files naming the stable workflow ID, durable checkpoints, and chosen trace units |
+| Explicit routing negative | <result> | real application | Exact explicit-empty real-launcher command, nonzero exit, and expected error |
+| Request separation | <result> | stored Judgment | Submit/approve trace IDs distinct from durable work trace IDs |
+| Producer activation | <result> | stored Judgment | Real submit and approval trace IDs in the intended project; worker roots alone do not pass |
+| Fresh activity roots | <result> | stored Judgment | Raw trace/span/parent IDs proving phase roots are distinct from submit and not interceptor children |
+| Root lifetime | <result> | stored Judgment | Raw start/end arithmetic for every root and child |
+| Session placement | <result> | stored Judgment | Exact workflow ID on every meaningful root |
+| Suspend boundary | <result> | stored Judgment | Pre- and post-suspend trace IDs and approval/timer/signal event |
+| Worker coverage | <result> | stored Judgment | Producer and each exporting worker's expected trace IDs |
+| Retry/replay | <result> | stored Judgment | Recorded workflow attempts reconciled to labeled roots without duplicates |
+| Signal density | <result> | stored Judgment | Business-root count versus Temporal/HTTP/poll-root count |
+| Payload safety and usefulness | <result> | stored Judgment | Named mode, benign/canary raw search, bounds, and inspected attribute set |
+| Export lifecycle | <result> | stored Judgment | Last completed pre-kill and first post-restart trace IDs after bounded flush |
+| Real workflow behavior | <result> | real application | Recorded events/results covering submit, suspend/approval, retry, restart, and completion |
+| Stored scenario proof | <result> | stored Judgment | Project, workflow session, trace IDs, and reconciliation to those recorded events/results |

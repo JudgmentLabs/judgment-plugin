@@ -37,6 +37,10 @@ Follow these principles for all Judgment work:
     supporting metadata; by themselves they do not make faithful root IO when
     meaningful business content exists. Child spans do not repair a
     behavior-blind root.
+11. **Fail closed only for startup routing; fail open during work**: after the
+    service starts, trace-only sanitizers, classifiers, setters, root finalizers,
+    reporters, and exporters must not prevent, repeat, or replace application
+    work. Their failure blocks verification and remains safely observable.
 
 ## Mandatory Architecture Routing
 
@@ -61,16 +65,23 @@ that sibling skill's `SKILL.md` completely.
 |---|---|
 | One request/chat turn finishes all work before returning | `judgment:judgment-tracing-request-response` |
 | Temporal or another durable workflow owns work after submission, signals, timers, approval, retries, or replay | `judgment:judgment-tracing-durable-workflows` |
-| A response/stream starts before generation, callbacks, persistence, or export finish | `judgment:judgment-tracing-streaming-serverless` |
+| A streamed/deferred response starts before generation, callbacks, persistence, or export finish | `judgment:judgment-tracing-streaming-serverless` (use its generic lifecycle contract; copy its implementation only for the explicitly supported framework/version) |
 | A long-running decision loop saves checkpoints and resumes after process death | `judgment:judgment-tracing-checkpointed-loops` |
 | A service invokes an external agent CLI and persists its returned session ID for resume | `judgment:judgment-tracing-cli-wrappers` |
 
 If none of these five completion models fits—for example a queue consumer,
-multi-agent graph, cron/batch worker, websocket, or unsupported framework
-version—do not force it into the nearest bucket. Read
+multi-agent graph, or cron/batch worker—do not force it into the nearest
+bucket. For a streaming framework/version without a copyable recipe, the
+streaming specialist still supplies the lifecycle contract, but requires a
+framework-specific implementation and proof rather than speculative code. Read
 [references/tracing.md](references/tracing.md), derive the boundary from the
 real completion owner, and report that architecture-specific guidance is
 unsupported or blocked. A guessed specialist is not successful routing.
+
+WebSockets, subscriptions, and indefinite streams remain unsupported unless
+the application proves a finite per-message/per-operation completion owner. In
+that case route the finite operation to the streaming lifecycle contract, not
+the connection lifetime.
 
 The component that owns completion wins. A FastAPI submit route in front of a
 Temporal workflow is a durable-workflow architecture. A FastAPI route invoking
@@ -86,10 +97,12 @@ production path actually uses it.
 Do not report completion until all six are backed by evidence:
 
 1. **Boundary and identity:** name the business root, its completion event,
-   and the exact stable session ID. Inspect raw parentage: the intended root
-   must be parentless, or the actual inherited HTTP/runtime root must itself
-   own the complete business lifetime, session, and semantic IO. A short
-   framework root above a useful child is a failed boundary.
+   and the exact stable session ID. Inspect raw parentage. Require an empty
+   parent when no intentional upstream context exists; with deliberate W3C or
+   distributed propagation, prove the expected upstream trace/span chain and
+   that the local business root still owns the complete local lifetime,
+   session, and semantic IO. A short accidental framework parent is a failed
+   boundary.
 2. **Routing:** require an explicit intended project and propagate key,
    organization, project, and every configured endpoint override to each real
    exporter process. Prove the real startup fails with the project set to an
@@ -110,16 +123,16 @@ Do not report completion until all six are backed by evidence:
    scratch span, stubbed provider, build, typecheck, or existence-only query is
    not live end-to-end verification.
 
-The final response must include one row per gate with `pass`, `fail`, or
-`blocked`, the evidence class, and the exact evidence used. If the provider was
-stubbed, the check is synthetic. If a negative command exited zero or a raw
-attribute was not inspected, that gate failed or is blocked. Never open with
-“live” or “end-to-end verified” unless every required real-application and
-stored-evidence gate passed.
+Report these gates using `pass`, `fail`, `blocked`, or `not-applicable` and one
+evidence class: static, synthetic, real application, or stored Judgment. The
+routed guide supplies its architecture-specific rows.
 
 ## Use Case References
 
 - Adding or auditing tracing: [references/tracing.md](references/tracing.md)
+- Copyable fail-open, payload, parentage, launcher, and evidence patterns for a
+  generic/unsupported architecture when those risks are present:
+  [references/instrumentation-safety-and-evidence.md](references/instrumentation-safety-and-evidence.md)
 - Creating evaluations and choosing scorers: [references/evaluations.md](references/evaluations.md)
 - Testing agent changes with OfflineTracer: [references/agent-testing.md](references/agent-testing.md)
 - Creating Python code judges: [references/code-judges.md](references/code-judges.md)

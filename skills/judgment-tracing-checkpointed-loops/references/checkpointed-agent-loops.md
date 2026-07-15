@@ -112,15 +112,39 @@ Match the installed Judgeval API rather than copying this blindly. With the
 current function-wrapper API, the shape is:
 
 ```typescript
+function reportTelemetryFailure(label: string, error: unknown): void {
+  try {
+    const kind = error instanceof Error ? error.name : typeof error;
+    console.warn(`Judgment telemetry failed: ${label} (${kind})`);
+  } catch {}
+}
+
+function bestEffortTraceWrite(label: string, write: () => void): void {
+  try {
+    write(); // Include trace-only sanitization/classification here.
+  } catch (error) {
+    reportTelemetryFailure(label, error);
+  }
+}
+
+function recordIterationError(error: unknown): void {
+  // Classification is trace-only and stays inside the fail-open guard.
+  const code = classifyIterationError(error);
+  Tracer.setOutput({ status: "failed", errorCode: code });
+  Tracer.setError(new Error(code));
+}
+
 async step(run: RunState): Promise<RunState> {
   const outcome = await Tracer.observe(
     async () => {
-      Tracer.setSessionId(run.id);
-      Tracer.setInput({
-        runId: run.id,
-        iteration: run.iteration,
-        goal: boundedText(run.goal),
-        state: summarizeState(run),
+      bestEffortTraceWrite("iteration input", () => {
+        Tracer.setSessionId(run.id);
+        Tracer.setInput({
+          runId: run.id,
+          iteration: run.iteration,
+          goal: boundedText(run.goal),
+          state: summarizeState(run),
+        });
       });
 
       try {
@@ -132,15 +156,16 @@ async step(run: RunState): Promise<RunState> {
         applyDecision(run, decision, result);
         await this.store.saveRun(run);
 
-        Tracer.setOutput(summarizeIterationOutcome(decision, result, run));
+        bestEffortTraceWrite("iteration output", () => {
+          Tracer.setOutput(summarizeIterationOutcome(decision, result, run));
+        });
         return { state: run, error: undefined };
       } catch (error) {
-        const code = classifyIterationError(error);
-        Tracer.setOutput({ status: "failed", errorCode: code });
-        // Record a normalized safe exception inside the span. Returning the
-        // original exception only in memory prevents the decorator from
-        // automatically copying its raw message into trace attributes.
-        Tracer.setError(new Error(code));
+        bestEffortTraceWrite("iteration error", () => {
+          recordIterationError(error);
+        });
+        // Returning the original only in memory prevents automatic raw-error
+        // capture and preserves application retry behavior after root end.
         return { state: run, error };
       }
     },
@@ -168,6 +193,9 @@ before instrumentation. If the repository already has a durable
 `markIterationFailed` transition, call that from its existing owner; do not add
 `run.status = "failed"` to the tracing adapter when it could suppress retries
 or change resume behavior.
+
+Use these best-effort helpers. Telemetry must not suppress a tool result,
+invent a failure transition, skip a checkpoint, or replace the real exception.
 
 `boundedText`, `summarizeState`, the `safe*` outcome helpers, and `safeError`
 are placeholders for real redaction and size policies. Do not store full
@@ -247,8 +275,25 @@ do not create a second root or put the iteration number in the span name.
   attribute still stores the full static prompt. If the installed integration
   cannot suppress that field, use a manual LLM span with automatic IO disabled
   or report privacy-safe LLM coverage as blocked.
+- Sanitize and bound the **final composed value** written to each trace field,
+  not only its ingredients. A safe goal can become unsafe again when joined
+  into `inputSummary`, a plan, query, URL, or result URL; do not retain a second
+  unbounded copy beside the sanitized field.
+- When policy permits semantic LLM evidence, retain a bounded message-shaped
+  summary of this specific call's current input and decision/output. A manual
+  span containing only `{iteration, planSet}` and `{decisionType}` is a
+  privacy-safe metadata fallback, but is incomplete for behavior evaluation
+  and must be labeled that way.
 - Avoid a generic tool wrapper plus a second business tool span for the same
   action.
+
+Choose an approved sanitizer, a conservative credential/auth baseline requiring
+privacy review, or strict omission (which blocks semantic evidence). Exercise
+non-real API/provider-key, authorization, cookie/session, secret-assignment,
+URL-credential, and private-key canaries before/beyond the bound and in a real
+tool/model error, compaction, and final result when those branches exist. After
+restart, search every raw attribute; no accumulated history, static prompt,
+schema, or report body may appear.
 
 ## Sessions and restart evidence
 
@@ -270,6 +315,11 @@ resource, attach the UUID to every root (for example
 hostname plus PID alone in a container; both can be reused after restart and
 falsely imply that one process survived. Never invent a new run/session ID
 merely to mark the restart.
+
+Run the production launcher with the project explicitly empty, a 30-second
+bound, and required process cleanup. It must fail with the expected
+configuration error before accepting work; `unset` is invalid when dotenv can
+refill it.
 
 ## Export lifecycle
 
@@ -314,11 +364,17 @@ async function stepAndFlush(
       checkpointTraceSafe = true;
     } catch (error) {
       // Keep telemetry failure observable without corrupting saved agent state.
-      console.error("Judgment iteration flush failed", error);
+      reportTelemetryFailure("iteration flush", error);
     }
 
     if (!checkpointTraceSafe) {
-      reportTraceExportFailure(run.id, next?.iteration ?? run.iteration);
+      try {
+        reportTraceExportFailure(run.id, next?.iteration ?? run.iteration);
+      } catch (error) {
+        // The reporter is telemetry too; it cannot replace a saved checkpoint
+        // or the loop's original application exception.
+        reportTelemetryFailure("export-failure reporter", error);
+      }
     }
   }
 }
@@ -362,7 +418,7 @@ Use the real application runtime and its real model mode for the scored check:
 5. Require compaction/checkpoint and finish branches when the scenario exposes
    them.
 6. Wait for ingestion to settle and query the exact session ID.
-7. Compare the iteration ledger with the stored roots.
+7. Compare the application's persisted iteration records with stored roots.
 
 The result passes only when:
 
@@ -382,19 +438,26 @@ SDK wiring only.
 
 ## Completion gate
 
-| Gate | Required evidence |
-| --- | --- |
-| Durable unit | The code path that saves one decision iteration is named and used as the root boundary |
-| Fresh roots | Every iteration is a parentless root with a trace ID distinct from the start/resume request; the installed fresh-trace mechanism is confirmed rather than assumed |
-| Trace count | Completed iteration ledger reconciles with finalized iteration roots |
-| Root evidence | Each root has bounded faithful input/output and contains all children |
-| Session continuity | Exact durable run ID is on every root before and after restart |
-| Restart survival | Last completed pre-kill and first post-resume iterations both arrive |
-| Process evidence | A process/container instance attribute changes across restart while the durable session ID remains stable, unless the runtime provides an equivalent independently verified marker |
-| Decision coverage | Plan/tool/compaction/retry/finish outcomes are visible |
-| LLM coverage | Real model spans include provider/model/tokens/cost |
-| Tool coverage | Every executed business tool has one useful bounded child span |
-| Entrypoints | Start/resume writes are separate traces or explicitly justified as omitted |
-| Payload safety | Raw attributes exclude full accumulated state, pages, files, reports, schemas, and secrets |
-| Export lifecycle | A bounded flush after root finalization succeeds before a deliberate restart is called trace-safe, or export failure blocks that verification claim |
-| Real-path proof | Stored evidence comes from the real model plus forced restart scenario, not only a fake smoke |
+Use the result/evidence vocabulary in the table. Missing evidence is `blocked`.
+For decision coverage, include every branch
+in the repository's real decision union; compaction, finish, and retry are
+conditional only when the architecture genuinely lacks them.
+
+| Gate | Result | Evidence class | Exact evidence |
+| --- | --- | --- | --- |
+| Durable unit | <result> | static | Function and save event used as the iteration root boundary |
+| Explicit routing negative | <result> | real application | Exact explicit-empty real-launcher command, nonzero exit, and expected error |
+| Fresh roots | <result> | stored Judgment | Every iteration's raw trace/span/empty-parent IDs distinct from start/resume |
+| Trace count | <result> | stored Judgment | Persisted completed-iteration records reconciled with finalized root trace IDs |
+| Root evidence | <result> | stored Judgment | Bounded semantic root IO plus raw child-window arithmetic |
+| Session continuity | <result> | stored Judgment | Exact durable run ID on every pre/post-restart root |
+| Restart survival | <result> | stored Judgment | Last completed pre-kill and first post-resume trace IDs |
+| Process evidence | <result> | stored Judgment | Changed boot UUID with stable run/session ID |
+| Decision coverage | <result> | stored Judgment | Trace IDs and semantic outcomes for every real decision-union branch; compaction, finish, and retry are conditional on existing in this agent |
+| LLM coverage | <result> | stored Judgment | Real provider/model/token/cost attributes and trace IDs |
+| Tool coverage | <result> | stored Judgment | One bounded semantic child per executed business tool |
+| Entrypoints | <result> | stored Judgment | Separate start/resume trace IDs or architectural reason for not-applicable |
+| Payload safety and usefulness | <result> | stored Judgment | Named mode, benign/canary raw search, bounds, and inspected attribute set |
+| Application behavior | <result> | real application | Persisted iteration records, actual branch outcomes, and unchanged restart/retry/final-result behavior |
+| Export lifecycle | <result> | stored Judgment | Pre-kill root found after bounded post-root flush and restart |
+| Stored scenario proof | <result> | stored Judgment | Project, exact run session, trace IDs, and reconciliation to persisted iteration records |

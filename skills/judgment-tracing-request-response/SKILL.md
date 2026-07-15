@@ -36,10 +36,11 @@ question; do not load the long general tracing guide by default.
    schemas, system prompts, or secrets, use a version-supported manual LLM
    span with automatic IO disabled or report privacy-safe LLM coverage as
    blocked.
-4. Choose and name one capture mode: an existing approved application
-   sanitizer; the documented conservative credential/auth baseline plus an
-   explicit privacy-review limitation; or strict omission, which makes useful
-   root evidence blocked. Truncation alone is not sanitization.
+4. Choose an approved sanitizer, a conservative credential/auth baseline that
+   requires privacy review, or strict omission (which blocks useful root
+   evidence). Sanitize before bounding. Raw canaries must cover API/provider
+   keys, authorization, cookies/sessions, secret assignments, URL credentials,
+   and private keys across input, output, error, and beyond-bound positions.
 5. End the observed business root before running an awaited, bounded exporter
    flush in the outer request layer's `finally` path. Success and request/model
    error paths must both attempt export after the root has ended.
@@ -63,8 +64,6 @@ stored Judgment evidence proves:
   unapproved bulk payloads while a benign semantic marker survives; and
 - the final completed root survives the tested restart/termination boundary.
 
-The final response must use the evidence table in the focused reference. Label
-each check `pass`, `fail`, or `blocked` and as static, synthetic, real
-application, or stored Judgment evidence. A stubbed provider is synthetic. An
-unset-project command that exited zero failed. Never call those checks “live”
-or “end-to-end verified.”
+Report the focused reference's table with `pass`, `fail`, `blocked`, or
+`not-applicable` and one evidence class: static, synthetic, real application,
+or stored Judgment. Missing evidence is `blocked`.

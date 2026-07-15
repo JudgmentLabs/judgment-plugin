@@ -42,7 +42,9 @@ or native source is actually enabled and its records are reconciled.
 ## Non-negotiable implementation gates
 
 1. Require an explicit project. Missing project configuration must fail before
-   serving traffic; do not guess a project or silently install a no-op tracer.
+   serving traffic; prove the real launcher rejects an explicitly empty value
+   even when dotenv exists. Do not guess a project or silently install a no-op
+   tracer.
 2. Forward key, organization, project, and endpoint overrides into the real
    wrapper runtime and, when inner tracing is claimed, into the subprocess.
 3. Use application-owned sanitized semantic prompt/reply fields. Truncation is
@@ -73,6 +75,7 @@ evidence must prove:
 - claimed inner-agent coverage is backed by actual inner LLM/tool/subagent
   evidence, otherwise the result is labeled wrapper baseline.
 
-Label evidence as static, synthetic, real application, or stored Judgment
-evidence and mark each gate `pass`, `fail`, or `blocked`. A fake CLI smoke does
-not prove real inner-agent tracing.
+Report the focused reference's table with `pass`, `fail`, `blocked`, or
+`not-applicable` and one evidence class: static, synthetic, real application,
+or stored Judgment. Missing evidence is `blocked`; a fake CLI does not prove
+real inner-agent tracing.

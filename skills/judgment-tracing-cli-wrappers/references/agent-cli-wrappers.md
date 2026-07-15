@@ -18,9 +18,9 @@ debugging.
 ## Required model
 
 - One completed wrapper task/request is one trace.
-- The root starts after request validation and remains active through the CLI
-  subprocess, JSON parsing, session mapping, turn persistence, and final HTTP
-  reply.
+- The root starts when the parsed request enters business handling and remains
+  active through business/session validation, the CLI subprocess, returned-ID
+  parsing, session mapping, turn persistence, and final HTTP reply.
 - Root input is the bounded, sanitized task prompt.
 - Root output is the final reply plus small status metadata.
 - `judgment.session_id` is the CLI session ID returned by the first invocation
@@ -59,12 +59,107 @@ Conceptually:
 
 ```python
 from dataclasses import dataclass
+from typing import cast
 from opentelemetry.trace import Status, StatusCode
 
+def report_telemetry_failure(label: str, error: Exception) -> None:
+    try:
+        logger.error("Judgment %s failed (%s)", label, type(error).__name__)
+    except Exception:
+        pass
+
+def best_effort_trace_write(label: str, write) -> None:
+    try:
+        # Keep trace-only sanitization/classification inside write too.
+        write()
+    except Exception as error:
+        report_telemetry_failure(label, error)
+
 @dataclass
-class WrapperOutcome:
-    reply: str | None = None
+class Outcome:
+    value: object | None = None
     error: Exception | None = None
+    error_code: str | None = None
+    exit_code: int | None = None
+
+def mark_error(code: str, exit_code: int | None = None) -> None:
+    output = {"status": "failed", "error_code": code}
+    if exit_code is not None:
+        output["exit_code"] = exit_code
+    Tracer.set_output(output)
+    Tracer.get_current_span().set_status(Status(StatusCode.ERROR, code))
+
+def cli_failure(error, code, exit_code=None) -> Outcome:
+    best_effort_trace_write(
+        f"CLI {code}", lambda: mark_error(code, exit_code)
+    )
+    return Outcome(error=error, error_code=code, exit_code=exit_code)
+
+@Tracer.observe(
+    span_type="agent",
+    span_name="agent_cli.invoke",
+    record_input=False,
+    record_output=False,
+)
+def traced_cli_invoke(request, wrapper_session) -> Outcome:
+    best_effort_trace_write(
+        "CLI input",
+        lambda: Tracer.set_input({
+            "mode": "noninteractive",
+            "resumed": wrapper_session.cli_session_id is not None,
+        }),
+    )
+    try:
+        result = runner.run_task(
+            request.prompt,
+            workspace_path=wrapper_session.workspace_path,
+            cli_session_id=wrapper_session.cli_session_id,
+        )
+    except TimeoutError as error:
+        return cli_failure(error, "cli_timeout")
+    except OSError as error:
+        return cli_failure(error, "cli_launch_failed")
+    except Exception as error:
+        return cli_failure(error, "cli_invoke_failed")
+
+    if result.exit_code != 0:
+        # Reuse the application's existing nonzero-exit error object and keep
+        # it in memory; never construct trace data from raw stderr.
+        error = existing_nonzero_exit_error(result)
+        return cli_failure(
+            error=error,
+            code="cli_nonzero_exit",
+            exit_code=result.exit_code,
+        )
+
+    best_effort_trace_write(
+        "CLI result",
+        lambda: Tracer.set_output({
+            "status": "completed",
+            "exit_code": result.exit_code,
+            "returned_cli_session_id": result.cli_session_id,
+            "reply": bounded_text(result.reply),
+        }),
+    )
+    return Outcome(value=result, exit_code=result.exit_code)
+
+def set_root_prompt(wrapper_session, request) -> None:
+    Tracer.set_attribute("wrapper.session_id", wrapper_session.id)
+    if wrapper_session.cli_session_id:
+        Tracer.set_session_id(wrapper_session.cli_session_id)
+    Tracer.set_input({
+        "request_kind": "agent_task",
+        "wrapper_session_id": wrapper_session.id,
+        "prompt": bounded_text(request.prompt),
+    })
+
+def set_root_success(result: CliResult, turn, reply: str) -> None:
+    Tracer.set_session_id(result.cli_session_id)
+    Tracer.set_output({
+        "reply": bounded_text(reply),
+        "turn_index": turn.index,
+        "exit_code": result.exit_code,
+    })
 
 @Tracer.observe(
     span_type="agent",
@@ -72,49 +167,56 @@ class WrapperOutcome:
     record_input=False,
     record_output=False,
 )
-def traced_wrapper_turn(request) -> WrapperOutcome:
-    wrapper_session = store.get_or_create_session(request.session_id)
-    Tracer.set_attribute("wrapper.session_id", wrapper_session.id)
-    # A resumed turn already knows the canonical CLI session. Attach it before
-    # invocation so a timeout or parse failure still belongs to that session.
-    if wrapper_session.cli_session_id:
-        Tracer.set_session_id(wrapper_session.cli_session_id)
-    Tracer.set_input({
-        "prompt": bounded_text(request.prompt),
-        "wrapper_session_id": wrapper_session.id,
-    })
-
+def traced_wrapper_turn(request) -> Outcome:
+    best_effort_trace_write(
+        "root request metadata",
+        lambda: Tracer.set_input({
+            # Metadata-only until business/session validation accepts it.
+            "request_kind": "agent_task",
+            "wrapper_session_id": safe_wrapper_id(request.session_id),
+        }),
+    )
     try:
-        result = runner.run_task(
-            request.prompt,
-            workspace_path=wrapper_session.workspace_path,
-            cli_session_id=wrapper_session.cli_session_id,
-        )
+        wrapper_session = store.get_or_create_session(request.session_id)
     except Exception as error:
-        code = classify_cli_error(error)
-        Tracer.set_output({"status": "failed", "error_code": code})
-        Tracer.get_current_span().set_status(Status(StatusCode.ERROR, code))
-        # Preserve the original exception only in memory. Raising it here can
-        # make the decorator serialize raw stderr, URLs, commands, or tokens.
-        return WrapperOutcome(error=error)
+        best_effort_trace_write(
+            "session validation error",
+            lambda: mark_error(classify_session_error(error)),
+        )
+        return Outcome(error=error)
 
-    # The first turn learns this only after the CLI returns. The root is still
-    # active, so the durable agent identity can be attached before finalization.
-    Tracer.set_session_id(result.cli_session_id)
+    best_effort_trace_write(
+        "root prompt", lambda: set_root_prompt(wrapper_session, request)
+    )
+    cli = traced_cli_invoke(request, wrapper_session)
+    if cli.error is not None:
+        best_effort_trace_write(
+            "root CLI error",
+            lambda: mark_error(cli.error_code or "cli_failed", cli.exit_code),
+        )
+        return Outcome(error=cli.error)
 
-    turn = store.persist_turn_and_cli_mapping(wrapper_session, result)
-    Tracer.set_output({
-        "reply": bounded_text(result.reply),
-        "turn_index": turn.index,
-        "exit_code": result.exit_code,
-    })
-    return WrapperOutcome(reply=result.reply)
+    result = cast(CliResult, cli.value)
+    try:
+        turn = store.persist_turn_and_cli_mapping(wrapper_session, result)
+        reply = build_http_reply(result, turn)
+    except Exception as error:
+        best_effort_trace_write(
+            "root persistence/response error",
+            lambda: mark_error(classify_wrapper_error(error)),
+        )
+        return Outcome(error=error)
+
+    best_effort_trace_write(
+        "root result", lambda: set_root_success(result, turn, reply)
+    )
+    return Outcome(value=reply)
 
 def run_wrapper_turn(request) -> str:
     outcome = traced_wrapper_turn(request)  # root ends before any re-raise
     if outcome.error is not None:
         raise outcome.error
-    return outcome.reply or ""
+    return cast(str, outcome.value or "")
 ```
 
 Match the actual SDK API and framework lifecycle. If a generic HTTP
@@ -124,6 +226,17 @@ noise. On a first-turn failure there may be no CLI session ID yet; retain the
 wrapper ID attribute and the bounded error without inventing a canonical
 session. On a resumed failure, the already-persisted CLI session must remain on
 the root.
+
+The outcome boundary must include business validation, subprocess execution,
+returned-session parsing, session mapping, turn persistence, and construction
+of the actual response. Transport-level JSON parsing may happen before it, but
+an invalid wrapper session, nonzero exit, timeout, launch failure, persistence
+failure, or response failure must still produce useful normalized root IO and
+error status. Do not end the root immediately after the subprocess returns.
+Validate transport shape and authentication in the outer HTTP owner before
+calling this adapter or capturing the free-form prompt. If rejected-request
+telemetry is required, emit metadata only—request kind, normalized rejection
+code, and safe IDs—with no prompt/body content.
 
 ## CLI invocation child
 
@@ -138,7 +251,8 @@ environment, raw JSONL, or auth material:
 - exit code and duration;
 - returned CLI session ID;
 - bounded final reply or reply length; and
-- sanitized stderr/error category on failure.
+- normalized error category on failure; add a bounded approved summary only
+  when policy explicitly permits it, never raw stderr by default.
 
 Never record OAuth tokens, API keys, authorization headers, complete process
 environment, full raw CLI transcripts, complete workspace files, or an
@@ -147,6 +261,22 @@ unbounded command string containing the prompt.
 If the CLI returns non-zero, mark the child and root as errors and preserve the
 bounded useful error. Do not turn a failed invocation into a successful trace
 with only `exit_code: 1` hidden in output.
+
+Apply the same normalized outcome at both levels for a nonzero exit, timeout,
+or launch failure: the `agent_cli.invoke` child records the safe error code,
+mode/resume flag, duration, and exit code when available; the wrapper root
+records the same error category and final API outcome. Preserve the original
+exception in memory for the application's existing handler, but never store raw
+stderr, command text, environment values, or exception messages by default.
+
+Choose an approved sanitizer, a conservative credential/auth baseline requiring
+privacy review, or strict omission (which blocks prompt/reply usefulness).
+Exercise non-real API/provider-key, authorization, cookie/session,
+secret-assignment, URL-credential, and private-key canaries before/beyond the
+bound and in controlled reply/error paths. Search every raw root, CLI child,
+inner span, event, and resource attribute before and after restart. Raw stderr,
+commands, environment values, and every canary must be absent while a benign
+semantic marker survives.
 
 ## Inner agent spans
 
@@ -173,6 +303,14 @@ captured and reconciled. When importing inner spans:
 A wrapper-only baseline can still be useful when its root, session, CLI child,
 restart continuity, and payload safety are correct. Report inner LLM/tool
 coverage as absent or unexercised rather than synthesizing it.
+
+Choose the observability target before editing and repeat it in the final gate
+table: `wrapper baseline`, `linked inner-agent traces`, or `full nested inner
+coverage`. For the latter two, name the real hook/JSONL/OTel source and provide
+stored LLM/tool/subagent trace IDs. If that source is unavailable, pass only the
+wrapper baseline and mark linked/full inner coverage `blocked`, never `pass` or
+`not-applicable`. An aggregate CLI child cannot silently satisfy stronger
+coverage.
 
 ## Complete project and endpoint routing
 
@@ -201,6 +339,11 @@ set to an empty value and requires a clear pre-start failure. Do not merely
 `unset` it: dotenv loading can repopulate an absent variable. The command must
 exit nonzero with the expected configuration error. It must not boot and
 silently route to a guessed project.
+
+Run the real wrapper launcher with the project explicitly empty, a 30-second
+bound, and cleanup in `finally` (`docker compose down --remove-orphans` for
+Compose). It must fail with the expected configuration error before readiness;
+`unset`, timeout, continued serving, or an unrelated failure does not pass.
 
 ## Fake and real modes
 
@@ -251,6 +394,12 @@ Verify raw timing:
 - root session is the returned/resumed CLI ID; and
 - no intended inner span arrives after the root has already ended.
 
+Record raw wrapper-root, CLI-child, and inner `trace_id`, `span_id`, and
+`parent_span_id` values. Require an empty root parent only without deliberate
+upstream context; otherwise prove the expected W3C/distributed chain and the
+root's complete local lifetime and IO. Nested children resolve to the wrapper
+root; linked subagents expose links. A UI waterfall is not proof.
+
 ## Mandatory real-path verification
 
 Use two independent wrapper sessions and at least one wrapper restart:
@@ -260,12 +409,14 @@ Use two independent wrapper sessions and at least one wrapper restart:
 3. End and boundedly flush the completed roots, then restart the wrapper.
 4. Resume the first and second sessions using their persisted CLI IDs.
 5. Exercise at least one CLI tool-producing task when practical.
-6. Separately set `JUDGMENT_PROJECT_NAME` to an explicit empty value and prove
+6. Safely exercise nonzero, timeout, and launch-failure handling; if one cannot
+   be triggered, mark that existing path `blocked`, not `not-applicable`.
+7. Separately set `JUDGMENT_PROJECT_NAME` to an explicit empty value and prove
    that the production launcher exits nonzero before serving traffic rather
    than allowing dotenv to refill it or guessing a project.
-7. Query Judgment by the exact CLI session IDs and wait for ingestion to
+8. Query Judgment by the exact CLI session IDs and wait for ingestion to
    settle.
-8. Inspect roots, CLI children, errors, session membership, and raw payloads.
+9. Inspect roots, CLI children, errors, session membership, and raw payloads.
 
 The result passes only when:
 
@@ -292,52 +443,38 @@ lifecycle point the framework actually waits for. Match the exact call to the
 installed SDK; do not put the flush inside the observed function while its root
 is still open, and do not detach it as fire-and-forget work.
 
-For a Python HTTP wrapper, make the two layers visible in code so the ordering
-cannot be mistaken for a shutdown-only flush:
+Use the main safe outcome adapter above; do not introduce a second traced
+implementation with different error semantics. The HTTP owner only validates
+auth/shape, calls it, and flushes after its root ends:
 
 ```python
 import asyncio
 
-@Tracer.observe(
-    span_type="agent",
-    span_name="agent_cli.task",
-    record_input=False,
-    record_output=False,
-)
-async def traced_wrapper_task(request: TaskRequest) -> TaskResult:
-    Tracer.set_input(safe_task_input(request))
-    result = await run_and_persist_cli_turn(request)
-    Tracer.set_session_id(result.cli_session_id)
-    Tracer.set_output(safe_task_output(result))
-    return result
+async def flush_wrapper_root_fail_open() -> None:
+    try:
+        flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
+        if not flushed:
+            report_telemetry_failure(
+                "wrapper flush", TimeoutError("flush timed out")
+            )
+    except Exception as error:
+        report_telemetry_failure("wrapper flush", error)
 
 @app.post("/tasks")
-async def create_task(request: TaskRequest):
+async def create_task(request: TaskRequest, auth=Depends(require_auth)):
+    # No free-form prompt capture occurs before this succeeds.
+    validate_auth_and_shape(request, auth)
     try:
-        result = await traced_wrapper_task(request)  # root ends on return/raise
-        return result.reply
+        # run_wrapper_turn returns/rethrows the main in-memory outcome only
+        # after the root ends; timeout/nonzero/launch semantics stay unchanged.
+        return await asyncio.to_thread(run_wrapper_turn, request)
     finally:
-        try:
-            flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
-            if not flushed:
-                logger.error("Judgment flush timed out after wrapper task attempt")
-                # Do not call this turn restart-safe until stored evidence arrives.
-        except Exception:
-            # Keep the original reply or business exception unchanged.
-            logger.exception("Judgment export failed after wrapper task attempt")
+        await flush_wrapper_root_fail_open()
 ```
 
-Replace the generic names and types. Preserve the first-turn late session-ID
-assignment and the root-then-flush ordering.
-
-If the subprocess can throw an error whose message or stderr is not approved
-trace data, use the same outcome-adapter shape as the request/response recipe:
-inside `traced_wrapper_task`, store a normalized error code and bounded
-sanitized outcome, mark the span with a safe error, and return the original
-exception only in memory. Re-raise it from `create_task` after the observed
-root has ended; the outer `finally` still flushes that failed root. Do not let
-the tracing decorator automatically serialize raw stderr, environment values,
-or command lines.
+The flush helper never raises. It blocks tracing verification when export fails
+without changing the valid reply or original business exception. Raw stderr,
+environment values, and commands never enter a tracing setter.
 
 For a deliberate restart test, do not restart the wrapper until that completion
 barrier succeeds or the export failure has been recorded as blocking the
@@ -348,16 +485,23 @@ restart-safe when its flush failed.
 
 ## Completion gate
 
-| Gate | Required evidence |
-| --- | --- |
-| Trace unit | One wrapper task is one finalized root through persistence and reply |
-| Root IO | Bounded prompt and final reply are stored on the root |
-| Canonical session | Root uses the returned/resumed CLI session ID, not only wrapper ID |
-| Resume continuity | Pre- and post-restart turns share the exact CLI session |
-| CLI child | Invocation mode, resume flag, exit code, duration, and bounded outcome are present |
-| Project routing | Resolved runtime includes explicit project and endpoint override names; an explicit-empty-project negative test exits nonzero before startup and no fallback project is accepted |
-| Noise | Health/session reads and ASGI plumbing do not dominate |
-| Payload safety | No token, environment dump, raw transcript, or workspace/file body is stored |
-| Real mode | A real authenticated first turn and resume turn were exercised |
-| Inner coverage | LLM/tool/subagent claims match actual captured spans, or are explicitly absent/unexercised |
-| Export lifecycle | A bounded awaited flush happens only after each root ends; a failed flush blocks the deliberate-restart verification claim |
+Use `not-applicable` only when the architecture genuinely lacks a gate. Missing
+evidence is `blocked`; fake CLI runs and scratch spans are synthetic.
+
+| Gate | Result | Evidence class | Exact evidence |
+| --- | --- | --- | --- |
+| Trace unit | <result> | static | Business function covering session validation, CLI, mapping, persistence, and response; transport auth/shape remains outside |
+| Explicit routing negative | <result> | real application | Exact explicit-empty real-launcher command, nonzero exit, and expected error |
+| Root parentage | <result> | stored Judgment | Wrapper/CLI/inner trace-span-parent IDs plus expected upstream chain or empty-parent proof |
+| Root IO | <result> | stored Judgment | Bounded prompt/reply for accepted tasks; metadata-only input plus normalized output for invalid-session paths |
+| Canonical session | <result> | stored Judgment | Returned/resumed CLI session ID on every applicable root |
+| Resume continuity | <result> | stored Judgment | Pre/post-restart trace IDs sharing the exact CLI session |
+| CLI child | <result> | stored Judgment | Mode, resume flag, exit/duration, and bounded outcome/error on child trace IDs |
+| Error paths | <result> | stored Judgment | Nonzero/timeout/launch trace IDs with matching normalized root/child status and no raw stderr |
+| Noise | <result> | stored Judgment | Business-root count versus health/session/ASGI span count |
+| Payload safety and usefulness | <result> | stored Judgment | Named mode, benign/canary raw search, bounds, and inspected attribute set |
+| Real wrapper behavior | <result> | real application | Two real sessions, resume mapping, restart, returned replies, and exercised failure |
+| Observability level | <result> | static | Explicit wrapper-baseline/linked/full target and named inner evidence source |
+| Inner coverage | <result> | stored Judgment | Actual LLM/tool/subagent trace IDs; if stronger coverage is targeted but no real source exists, result is blocked, never pass/not-applicable |
+| Export lifecycle | <result> | stored Judgment | Last pre-restart and first post-restart root IDs after bounded post-root flush |
+| Stored scenario proof | <result> | stored Judgment | Project, CLI sessions, trace IDs, and reconciliation to recorded requests/results |

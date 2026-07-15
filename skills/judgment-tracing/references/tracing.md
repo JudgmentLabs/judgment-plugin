@@ -107,10 +107,11 @@ meaningful user-facing business or agent work that needs independent debugging.
 
 This distinction also applies to verification traffic. A protected or local
 test may call a readback endpoint after every turn to assert persistence. Those
-calls are evidence about the application, not additional expected traces. Before
-claiming completion, reconcile the meaningful work ledger with stored root
-counts and calculate the ratio of meaningful roots to health/status/readback
-roots. Extra readback roots are over-instrumentation, not harmless coverage.
+calls are evidence about the application, not additional expected traces.
+Before claiming completion, record the meaningful requests/operations and
+their outcomes, reconcile that list with stored root counts, and calculate the
+ratio of meaningful roots to health/status/readback roots. Extra readback roots
+are over-instrumentation, not harmless coverage.
 
 Look specifically for APIs that return a stream, iterator, task, workflow
 handle, callback-driven result, or background job. Follow the real execution
@@ -181,10 +182,16 @@ early callback.
 For an ordinary Python request server, use the same two-layer pattern that a
 durable activity uses: the inner observed function owns and ends the business
 root; the outer route waits for that function and only then flushes before
-returning. Adapt names and response types to the repository:
+returning. Use the fail-open helper from
+[instrumentation-safety-and-evidence.md](instrumentation-safety-and-evidence.md)
+and adapt names and response types to the repository:
 
 ```python
 import asyncio
+
+def set_turn_trace_input(request: ChatRequest) -> None:
+    Tracer.set_session_id(request.session_id)
+    Tracer.set_input(safe_turn_input(request))
 
 @Tracer.observe(
     span_type="agent",
@@ -193,10 +200,13 @@ import asyncio
     record_output=False,
 )
 async def traced_turn(request: ChatRequest) -> ChatResult:
-    Tracer.set_session_id(request.session_id)
-    Tracer.set_input(safe_turn_input(request))
+    best_effort_trace_write(
+        "turn input", lambda: set_turn_trace_input(request)
+    )
     result = await run_agent_turn(request)
-    Tracer.set_output(safe_turn_output(result))
+    best_effort_trace_write(
+        "turn output", lambda: Tracer.set_output(safe_turn_output(result))
+    )
     return result
 
 @app.post("/chat")
@@ -207,12 +217,14 @@ async def chat(request: ChatRequest):
         try:
             flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
             if not flushed:
-                logger.error("Judgment flush timed out after chat turn attempt")
+                report_telemetry_failure(
+                    "chat flush", TimeoutError("flush timed out")
+                )
                 # Preserve behavior, but do not claim restart-safe export.
-        except Exception:
+        except Exception as error:
             # Telemetry failure must not replace a valid result or the
             # application's original exception.
-            logger.exception("Judgment export failed after chat turn attempt")
+            report_telemetry_failure("chat flush", error)
 ```
 
 Do not copy `agent.chat_turn`, request types, or helper names literally. The
@@ -378,9 +390,15 @@ active tool span:
 def write_file(self, path: str, content: str) -> dict[str, object]:
     # Do not record self or the file body. Apply the application's path policy
     # before recording even the path.
-    Tracer.set_input({"path": safe_relative_path(path), "content_bytes": len(content.encode())})
+    best_effort_trace_write("write-file input", lambda: Tracer.set_input({
+        "path": safe_relative_path(path),
+        "content_bytes": len(content.encode()),
+    }))
     result = persist_file(path, content)
-    Tracer.set_output({"path": safe_relative_path(path), "bytes_written": result["bytes_written"]})
+    best_effort_trace_write("write-file output", lambda: Tracer.set_output({
+        "path": safe_relative_path(path),
+        "bytes_written": result["bytes_written"],
+    }))
     return result
 ```
 
