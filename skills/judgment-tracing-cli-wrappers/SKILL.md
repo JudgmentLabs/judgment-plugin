@@ -33,4 +33,6 @@ Reconcile real wrapper turns and exact underlying CLI session IDs with settled
 raw Judgment evidence across restart. Report every recipe gate as `pass`,
 `fail`, `blocked`, or genuinely `not-applicable`, with evidence class `static`,
 `synthetic`, `real application`, or `stored Judgment`. Missing evidence is
-`blocked`.
+`blocked`. Do not collapse the edge matrix into one "error paths" verdict;
+each named subcase needs the evidence class required by its completion row or
+remains blocked.

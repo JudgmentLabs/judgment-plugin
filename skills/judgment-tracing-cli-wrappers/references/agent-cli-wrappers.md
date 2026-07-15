@@ -89,10 +89,14 @@ Use two independent real CLI sessions:
 3. Restart the wrapper.
 4. Resume both using their persisted CLI IDs.
 5. Exercise a tool-producing task when practical.
-6. Safely exercise nonzero, timeout, and launch failure; untriggered existing
-   paths are `blocked`.
-7. Run the explicit-empty project launcher check.
-8. Query exact CLI sessions after ingestion and inspect raw roots/children.
+6. Safely exercise every named subcase in the binding recipe's complete edge
+   matrix; each gets its own injection/result and each untriggered subcase is
+   independently `blocked`.
+7. Run empty-project and same-type unknown-name/ID launcher checks plus a valid
+   positive control; prove expected errors, no readiness, and no project creation.
+8. Prove every non-live unit/stub/fake/build/typecheck/import/smoke/dev/static-
+   generation command exported zero unexplained live roots.
+9. Query exact CLI sessions after ingestion and inspect raw roots/children.
 
 Require one finalized nonzero-duration business root per task, truthful
 semantic prompt/reply or normalized error, exact CLI session grouping, separate
@@ -108,13 +112,21 @@ evidence is `blocked`; fake CLI and scratch spans are synthetic.
 | Gate | Result | Evidence class | Exact evidence |
 | --- | --- | --- | --- |
 | Trace unit | <result> | static | Business function covers validation, CLI, mapping, persistence, and response |
-| Explicit routing negative | <result> | real application | Explicit-empty launcher command, nonzero exit, and expected error |
+| Dependency integrity | <result> | static | Pre/post manifest and lockfile hashes/diff, frozen-lock install, and unchanged unrelated wrapper/runtime/CLI versions |
+| Routing startup and negatives | <result> | real application | Valid-target positive startup; empty and unknown name/ID commands with expected errors/no readiness/no creation |
+| Exact stored destination | <result> | stored Judgment | Named settled trace/probe ID in the exact intended project, with resolved-ID equality or read-only resolution recorded as the routing mechanism |
 | Root parentage | <result> | stored Judgment | Wrapper/CLI/inner raw IDs plus expected upstream chain or empty-parent proof |
 | Root IO | <result> | stored Judgment | Bounded prompt/reply or metadata-only invalid-session input plus normalized output |
 | Canonical session | <result> | stored Judgment | Returned/resumed CLI session on every applicable root |
 | Resume continuity | <result> | stored Judgment | Pre/post-restart trace IDs sharing the exact CLI session |
 | CLI child | <result> | stored Judgment | Mode, resume, exit/duration, and bounded outcome/error |
-| Error paths | <result> | stored Judgment | Nonzero/timeout/launch trace IDs with matching normalized statuses and no stderr |
+| Invalid-input privacy | <result> | stored Judgment | Unchanged transport outcome, metadata-only root input, matching fixed `invalid_session` output/raw `ERROR` status, no CLI child |
+| CLI-owned status parity (one result per subcase) | <result> | stored Judgment | Separate nonzero, timeout, launch, empty, malformed, missing-result, and missing-first-session trace IDs with matching fixed safe root/child output codes and raw `ERROR` statuses; no stderr/raw exception |
+| Pre-CLI state failure | <result> | stored Judgment | Session lookup/create/state and unexpected-pre-CLI injections with matching fixed safe root output/raw `ERROR` status, no CLI child, and unchanged transport behavior |
+| Post-CLI failure ownership (one result per subcase) | <result> | stored Judgment | Separate returned-ID mapping, turn-persistence, response-serialization, and unexpected-post-CLI traces with matching fixed safe root output/raw `ERROR` status and truthful successful child |
+| Runtime telemetry fail-open (one result per subcase) | <result> | real application | Separate wrapper-root start/enter/exit, CLI-child start/enter/exit, each setter, sanitizer/classifier/reporter/finalizer, synchronous flush throw, async rejection where applicable, and timeout injections leave the CLI/business path single-run and behavior unchanged; child scope failure does not overwrite parent |
+| Strict child window | <result> | stored Judgment | Normalized root/child start and end margins, evidence-derived stored precision, and repeats for within-precision negatives |
+| Test-export isolation | <result> | stored Judgment | Exact non-live commands/time window and named live probe ledger; zero unit/stub/fake/build/typecheck/import/smoke/dev/static-generation pollution |
 | Noise | <result> | stored Judgment | Business-root count versus health/session/ASGI roots |
 | Payload safety and usefulness | <result> | stored Judgment | Named mode, benign/canary raw search, bounds, parseable structured IO, and inspected fields |
 | Real wrapper behavior | <result> | real application | Two real sessions, resume mapping, restart, replies, and exercised failure |
@@ -122,3 +134,4 @@ evidence is `blocked`; fake CLI and scratch spans are synthetic.
 | Inner coverage | <result> | stored Judgment | Actual LLM/tool/subagent IDs; unavailable stronger source is blocked |
 | Export lifecycle | <result> | stored Judgment | Last pre-restart and first post-restart roots after bounded flush |
 | Stored scenario proof | <result> | stored Judgment | Project, CLI sessions, trace IDs, and reconciliation to requests/results |
+| Ingestion settlement | <result> | stored Judgment | Post-flush raw-read timestamps and stable span-set hashes across the named interval; complete unchanged trees and terminal IO/status |

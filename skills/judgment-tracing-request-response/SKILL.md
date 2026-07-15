@@ -27,8 +27,11 @@ question; do not load the long general tracing guide by default.
 
 ## Non-negotiable implementation gates
 
-1. Require an explicit intended project. Do not invent an example-project
-   fallback and do not silently disable export when it is missing.
+1. Require an explicit intended project and exact target identity. Compare the
+   resolved ID with a deployment-supplied expected ID when available; otherwise
+   prove a unique live probe settled in that exact project. Do not invent an example-project
+   fallback and do not silently disable export when routing is missing or
+   unresolved.
 2. Propagate the key, organization, project, and every configured endpoint
    override into the process that actually serves the request.
 3. Inspect the installed provider wrapper before using it. If automatic model
@@ -61,10 +64,16 @@ stored Judgment evidence proves:
 - every child starts and ends inside the root window;
 - exact session IDs group turns across an exercised restart;
 - expected LLM/tools and error paths are visible without readback noise;
-- explicit routing reaches the intended existing project;
+- independent root/child scope, setter, sanitizer/classifier, finalizer, and
+  flush fault injections leave the request path single-run and unchanged;
+- explicit routing reaches the intended existing project, while empty and
+  unique-unknown name/ID launchers fail before readiness and create nothing;
 - raw attributes exclude secrets, histories, schemas, files, and other
   unapproved bulk payloads while a benign semantic marker survives; and
-- the final completed root survives the tested restart/termination boundary.
+- the final completed root survives the tested restart/termination boundary;
+  and
+- every non-live unit/stub/fake/build/typecheck/import/smoke/dev/static-
+  generation command exports zero unexplained live roots.
 
 Report the focused reference's table with `pass`, `fail`, `blocked`, or
 `not-applicable` and one evidence class: static, synthetic, real application,

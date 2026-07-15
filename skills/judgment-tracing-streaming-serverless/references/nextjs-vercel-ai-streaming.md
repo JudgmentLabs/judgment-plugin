@@ -39,10 +39,15 @@ Diagnose the real production bundle:
 - inspect generated server output, then run one real route whose application
   root and AI SDK children share a trace ID.
 
-Forward key, organization, explicit project, and endpoint overrides to the
-actual standalone/serverless runtime. Test the built launcher with project set
-explicitly empty under a 30-second supervisor and guaranteed cleanup. It must
-exit with the expected error before readiness even when dotenv exists.
+Forward key, organization, explicit project, deployment-provided project ID
+when present, and endpoint overrides to the actual standalone/serverless
+runtime. Compare the resolved runtime ID with that expected ID when available,
+or keep the exact-routing gate blocked until a unique live
+probe settles in the exact project. Test the built launcher with the project
+explicitly empty and with a unique unknown name or ID of the type it accepts
+under a 30-second supervisor and guaranteed cleanup. Both must exit with the
+expected routing error before readiness, the unknown target must not be
+created, and a valid-target positive control must start.
 
 ## Start a manually controlled active root
 
@@ -148,17 +153,24 @@ synthetic.
 | Gate | Result | Evidence class | Exact evidence |
 | --- | --- | --- | --- |
 | Framework/runtime match | <result> | static | Installed AI SDK major plus Node `streamText` text-response path |
+| Dependency integrity | <result> | static | Pre/post manifest and lockfile hashes/diff, frozen-lock install, and unchanged unrelated Next.js/AI SDK/provider versions |
 | Shared runtime | <result> | static | Preserved config and production bundle showing one Judgeval runtime |
 | Initialization | <result> | real application | Real launcher order proving initialization before readiness/requests |
-| Complete configuration | <result> | static | Resolved key, org, explicit project, and endpoint variable names |
-| Explicit routing negative | <result> | real application | Explicit-empty launcher command, nonzero exit, and expected error |
+| Routing startup and negatives | <result> | real application | Valid-target positive startup; empty and unknown name/ID commands with expected errors/no readiness/no creation |
+| Exact stored destination | <result> | stored Judgment | Named settled trace/probe ID in the exact intended project, with resolved-ID equality or read-only resolution recorded as the routing mechanism |
 | Correct boundary | <result> | stored Judgment | Root ID, duration, final IO, and terminal-event reconciliation |
 | Root parentage | <result> | stored Judgment | Root/model/tool raw IDs plus expected upstream chain or empty-parent proof |
+| Strict child windows | <result> | stored Judgment | Complete parent tree, evidence-derived precision, start/end margins, and repeats for within-precision negatives |
+| Root count and noise | <result> | stored Judgment | Traffic ledger reconciled to business roots; health/readback/build/smoke roots absent or separately sampled |
 | Context | <result> | stored Judgment | Exact session/customer IDs before and after restart |
 | Payload safety and usefulness | <result> | stored Judgment | Named mode, raw canary search, bounds, parseability, and inspected fields |
 | Tool usefulness | <result> | stored Judgment | Business tool names and bounded semantic IO/error |
+| LLM usefulness | <result> | stored Judgment | Real child with provider/model plus available latency/token/cost and bounded per-call semantic evidence; no history/schema/prompt bulk |
 | Finalization | <result> | real application | Persistence, framework close, root end, flush, and response EOF order |
 | Export lifecycle | <result> | stored Judgment | Trace surviving tested EOF/freeze/restart after bounded flush |
 | Error and cancellation | <result> | real application | Error/abort outcomes preserving persistence policy and stopped upstream work |
-| Stored terminal outcomes | <result> | stored Judgment | Raw root IDs/outcomes for success, model error, persistence error, and abort |
+| Stored terminal outcomes/status parity | <result> | stored Judgment | Raw root IDs, static ERROR status + matching output for failures, explicit non-success cancellation, and post-abort horizon proving no late side effects |
 | Restart proof | <result> | stored Judgment | Completed pre-restart and first post-restart root IDs |
+| Runtime telemetry fail-open (one result per subcase) | <result> | real application | Root/model/tool scope start/enter/exit, terminal-state mark/freeze/read, each setter/status/sanitizer/reporter/root-end, sync-guard async misuse, flush throw/rejection/timeout; business path once and unchanged |
+| Ingestion settlement | <result> | stored Judgment | Post-flush raw read timestamps and stable span-set hashes across a named interval; complete unchanged parent tree and terminal IO |
+| Test-export isolation | <result> | stored Judgment | Exact non-live commands/run/time window and stable ingestion check; zero unit/stub/fake/build/typecheck/import/smoke/dev/static-generation roots in Monitoring |

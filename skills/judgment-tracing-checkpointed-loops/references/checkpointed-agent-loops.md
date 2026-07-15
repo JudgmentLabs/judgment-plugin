@@ -119,18 +119,25 @@ Missing evidence is `blocked`. Compaction, finish, and retry are
 | Gate | Result | Evidence class | Exact evidence |
 | --- | --- | --- | --- |
 | Durable unit | <result> | static | Function and save event used as the iteration root boundary |
-| Explicit routing negative | <result> | real application | Explicit-empty launcher command, nonzero exit, and expected error |
+| Dependency integrity | <result> | static | Pre/post manifest and lockfile hashes/diff, frozen-lock install, and unchanged unrelated loop/runtime/provider versions |
+| Routing startup and negatives | <result> | real application | Valid-target positive startup; empty and same-type unknown name/ID commands with expected errors/no readiness/no creation |
+| Exact stored destination | <result> | stored Judgment | Named settled trace/probe ID in the exact intended project, with resolved-ID equality or read-only resolution recorded as the routing mechanism |
 | Fresh roots | <result> | stored Judgment | Raw trace/span/empty-parent IDs distinct from start/resume |
 | Trace count | <result> | stored Judgment | Persisted iteration outcomes reconciled with finalized iteration roots; separately labeled attempt roots reconciled to durable attempt records |
-| Root evidence | <result> | stored Judgment | Bounded semantic IO plus raw child-window arithmetic |
+| Root evidence | <result> | stored Judgment | Bounded semantic IO and complete raw parent trees |
+| Strict child windows | <result> | stored Judgment | Evidence-derived timestamp precision, start/end margins for every complete iteration tree, and repeats for within-precision negatives |
 | Session continuity | <result> | stored Judgment | Exact run ID on every pre/post-restart root |
 | Restart survival | <result> | stored Judgment | Last pre-kill and first post-resume trace IDs |
 | Process evidence | <result> | stored Judgment | Changed boot UUID with stable run/session ID |
 | Decision coverage | <result> | stored Judgment | Trace IDs and semantic outcomes for every real decision-union branch |
 | LLM coverage | <result> | stored Judgment | Real provider/model/token/cost attributes and trace IDs |
 | Tool coverage | <result> | stored Judgment | One bounded semantic child per executed business tool |
+| Error/output status parity | <result> | stored Judgment | Every durably recorded unrecovered iteration/model/tool failure has matching fixed safe output and raw `ERROR` status; recovered parent outcomes remain truthful |
 | Entrypoints | <result> | stored Judgment | Separate start/resume trace IDs or genuine not-applicable reason |
 | Payload safety and usefulness | <result> | stored Judgment | Named mode, benign/canary raw search, bounds, parseable structured IO, and inspected fields |
 | Application behavior | <result> | real application | Persisted iterations and unchanged restart/retry/final-result behavior |
 | Export lifecycle | <result> | stored Judgment | Pre-kill root found after bounded post-root flush and restart |
 | Stored scenario proof | <result> | stored Judgment | Project, exact run session, trace IDs, and ledger reconciliation |
+| Ingestion settlement | <result> | stored Judgment | Post-flush raw-read timestamps and stable span-set hashes across the named interval; complete unchanged trees and terminal IO/status |
+| Test-export isolation | <result> | stored Judgment | Exact non-live commands/time window and named live-probe ledger; zero unit/stub/fake/build/typecheck/import/smoke/dev/static-generation roots in Monitoring |
+| Runtime telemetry fail-open (one result per subcase) | <result> | real application | Separate iteration and model/tool scope start/enter/exit, setter/status, sanitizer/classifier, finalizer, flush throw/rejection/timeout injections; model/action/save path once and unchanged |

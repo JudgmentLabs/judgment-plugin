@@ -82,9 +82,13 @@ the traced agent code if that code already uses Judgment tracing correctly.
 Production-style setup might look like this:
 
 ```python
+import os
 from judgeval import Tracer
 
-Tracer.init(project_name="default_project")
+project_name = os.environ["JUDGMENT_PROJECT_NAME"].strip()
+if not project_name:
+    raise RuntimeError("JUDGMENT_PROJECT_NAME is required")
+Tracer.init(project_name=project_name)
 
 run_agent(user_input)
 ```
@@ -126,10 +130,14 @@ the planned judges, then expand if the traces do not contain enough evidence.
 ## Python Example
 
 ```python
+import os
 from judgeval import Judgeval, Tracer
 from judgeval.data import Example
 
-client = Judgeval(project_name="default_project")
+project_name = os.environ["JUDGMENT_PROJECT_NAME"].strip()
+if not project_name:
+    raise RuntimeError("JUDGMENT_PROJECT_NAME is required")
+client = Judgeval(project_name=project_name)
 
 source_dataset = client.datasets.get(name="agent-regression")
 if source_dataset is None:

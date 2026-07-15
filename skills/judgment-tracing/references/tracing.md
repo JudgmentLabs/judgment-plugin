@@ -134,6 +134,11 @@ For a streamed user turn:
 - Do not use an automatic function wrapper as the root when the wrapped
   function synchronously returns a stream handle. The wrapper will end when the
   handle is returned, before the streamed work finishes.
+- Do not presume an automatic decorator or context manager is fail-open. Its
+  scope start, enter, and exit can fail independently. Use the focused binding's
+  guarded optional-scope pattern or inject all three faults and prove the real
+  business operation runs once with the same result. Never catch an exit error
+  by rerunning work that already began.
 - Keep the root active through model generation, tool calls, stream completion,
   final output collection, and application persistence.
 - Preserve streaming behavior. Do not buffer the response solely to make the
@@ -348,10 +353,18 @@ asynchronous initialization finishes.
   judgment_project = require_env("JUDGMENT_PROJECT_NAME")
   ```
 
-  An explicit-empty-project negative test must exit nonzero before the server
-  accepts traffic. Do not merely `unset` the variable: dotenv may repopulate it.
-  Reject `${JUDGMENT_PROJECT_NAME:-example}`, hard-coded agent names, and a
-  silent no-op tracer as substitutes for explicit routing.
+  Require the intended existing project and a resolved runtime project ID.
+  Compare it with a deployment-provided expected ID when available; a nonempty
+  ID alone does not prove the target. Without an expected ID, keep exact routing
+  blocked until a uniquely marked live probe settles in the intended project.
+  Run the real launcher with an explicitly empty
+  target and with a unique unknown name or syntactically valid ID of the same
+  type it accepts. Both must produce the expected routing error before readiness,
+  the unknown target must not be created, and a valid-target positive control
+  must start. Do not merely `unset` the variable: dotenv may repopulate it.
+  Reject `${JUDGMENT_PROJECT_NAME:-example}`, hard-coded agent names, implicit
+  project creation, and a silent no-op tracer as substitutes for explicit
+  routing.
 
   Before declaring the integration verified, compare the names of all
   `JUDGMENT_*` variables present in the launcher with the names present inside
@@ -359,6 +372,16 @@ asynchronous initialization finishes.
   launcher variable that affects routing is absent in the target runtime, the
   production path is not configured or verified. A host dotenv file does not
   automatically become container environment.
+
+  Start ordinary unit/stub/fake tests in a fresh process with all export-capable
+  Judgment/Judgeval/OTel credentials and exporter headers explicitly overridden
+  empty before any app/SDK import, and `OTEL_SDK_DISABLED=true` where supported;
+  or inject a proven in-memory/no-export tracer. If config requires a project
+  string, use an obviously synthetic value only after proving the exporter is
+  disabled. Merely unsetting can let dotenv refill values, clearing after import
+  is too late, and `setdefault` is not isolation. Named OfflineTracer evaluation
+  harnesses may export only to offline trace storage; reconcile all named probes
+  and require zero unexplained live Monitoring roots.
 
 #### Keep payload capture deliberate
 

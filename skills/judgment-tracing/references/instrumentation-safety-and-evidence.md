@@ -8,15 +8,27 @@ of these risks is present.
 - [Fail closed and fail open](#fail-closed-at-startup-fail-open-during-application-work)
 - [Safe, useful payloads](#safe-useful-payloads)
 - [Binding parentage proof](#binding-parentage-proof)
-- [Real explicit-empty check](#real-explicit-empty-launcher-check)
+- [Real routing startup checks](#real-routing-startup-checks)
 - [Evidence vocabulary](#evidence-vocabulary)
 
 ## Fail closed at startup, fail open during application work
 
-Fail startup before readiness when required Judgment routing is missing. In
-particular, reject an explicitly empty project even when dotenv files exist.
+Fail startup before readiness when required Judgment routing is missing or the
+configured project does not resolve. A nonempty typo can still make the SDK
+install a silent no-export tracer. Inspect the installed SDK and require its
+resolved project identity/monitoring state after initialization. A nonempty
+resolved ID proves resolution, not that the target is correct. Compare it with
+a pinned expected project ID. If the runtime cannot compare identities, require
+a uniquely named live probe to settle in the exact intended project before the
+routing gate passes. For Judgeval Python 1.2, for example, `Tracer.init(...)`
+returns a tracer whose public `project_id` must be nonempty and must equal the
+pinned intended ID. Reject both an explicitly empty project and a unique
+unknown project name or ID of the same type the launcher accepts, even when
+dotenv files exist. Do not allow the negative check to create a project.
+Inspect the installed resolution path first; if name initialization can create,
+perform a read-only lookup and reject the unknown value before that path.
 Propagate the key, organization, project, and configured endpoint overrides to
-every process that exports.
+every exporter.
 
 After startup, telemetry is observational. A sanitizer, classifier, trace
 setter, reporter, root finalizer, or flush failure must not prevent, repeat, or
@@ -55,18 +67,55 @@ function reportTelemetryFailure(label: string, error: unknown): void {
   } catch {}
 }
 
-function bestEffortTraceWrite(label: string, write: () => void): void {
+function bestEffortTraceWrite(label: string, write: () => unknown): void {
   try {
-    write();
+    const result = write();
+    if (result && typeof (result as PromiseLike<unknown>).then === "function") {
+      void Promise.resolve(result).catch((error) => {
+        reportTelemetryFailure(`${label}:async-rejection`, error);
+      });
+      reportTelemetryFailure(
+        label,
+        new TypeError("async_write_requires_bestEffortTraceWriteAsync"),
+      );
+    }
   } catch (error) {
     reportTelemetryFailure(label, error);
   }
 }
+
+async function bestEffortTraceWriteAsync(
+  label: string,
+  write: () => Promise<void>,
+  timeoutMs: number,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.resolve().then(write),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("telemetry_timeout")),
+          timeoutMs,
+        );
+      }),
+    ]);
+    return true;
+  } catch (error) {
+    reportTelemetryFailure(label, error);
+    return false;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 ```
 
-Root end and bounded flush need the same treatment. End the business root
-first, then flush from its outer owner. Report export failure without changing
-the already-determined application outcome.
+The synchronous helper detects and safely observes an accidentally returned
+promise, but that call site remains blocked because it was not awaited. Use and `await` the
+async helper for promise-returning finalization or export such as Judgeval JS
+`Tracer.forceFlush()`. Root end and bounded flush need the same treatment. End
+the business root first, then flush from its outer owner. Report export failure
+without changing the already-determined application outcome.
 
 ## Safe, useful payloads
 
@@ -82,9 +131,12 @@ structured IO remains parseable. Do not claim a short credential redactor
 handles general PII or domain secrets.
 
 For conservative-mode proof, use non-real canaries for OpenAI-style `sk-`,
-GitHub-style `ghp_` and `github_pat_`, other installed-provider/API-key
-prefixes, bearer/basic authorization, cookies/sessions, secret/token/password
-assignments, URL credentials, and private-key blocks.
+GitHub-style `ghp_` and `github_pat_`, installed-provider/API-key prefixes,
+prefixed assignments such as `JUDGMENT_API_KEY=` and
+`AWS_SECRET_ACCESS_KEY=`, scheme-agnostic `Authorization:` and
+`Proxy-Authorization:` headers (including `ApiKey`/custom schemes),
+cookies/sessions, secret/token/password assignments, URL credentials, and
+private-key blocks.
 
 Put a benign semantic marker and at least one canary before the size bound,
 another canary beyond it, and distinct canaries in output and error paths. In
@@ -101,11 +153,13 @@ prove the expected upstream chain and that the local business root still owns
 the complete local lifetime, session, and semantic input/output. A UI
 waterfall, decorator option, or short accidental framework parent is not proof.
 
-## Real explicit-empty launcher check
+## Real routing startup checks
 
-Run the production launcher with the project explicitly empty. For a Compose
-app, use a bounded run that always removes its resources; replace `service`
-with the real readiness-owning producer or worker:
+Run the production launcher once with the project explicitly empty and once
+with a unique unknown name or ID of the same type the launcher accepts. Both
+must fail before readiness, and the unknown value must not create a project. For
+a Compose app, use a bounded run that always removes its resources; replace
+`service` with the real readiness-owning producer or worker:
 
 ```python
 import os
@@ -128,10 +182,32 @@ finally:
 assert result.returncode != 0
 ```
 
-For a direct launcher, use the same explicit environment, 30-second bound,
-nonzero-exit assertion, and required process cleanup. An `unset` test is not
-equivalent because dotenv may repopulate the value. A unit import, scratch
-span, or alternate launcher does not prove production startup routing.
+Nonzero exit alone is not proof: assert the repository-specific missing or
+unknown-project error appeared and the readiness marker did not. Run the same
+launcher with the valid intended target as a positive control so an unrelated
+startup crash cannot make both negative cases look correct.
+
+Repeat with `JUDGMENT_PROJECT_NAME="ATA_NONEXISTENT_PROJECT_<unique>"` when the
+launcher accepts names. When it accepts IDs, use a syntactically valid unknown
+ID in the matching project-ID setting instead. A warning followed by readiness,
+falling back to another project, or creating the unknown target is a failure,
+not graceful degradation. For a direct launcher, use the same explicit
+environment, 30-second bound, nonzero-exit assertion, and required process
+cleanup. An `unset` test is not equivalent because dotenv may repopulate the
+value. A unit import, scratch span, or alternate launcher does not prove
+production startup routing. A positive startup also does not prove the exact
+destination by itself: compare the resolved ID to the pinned intended ID or
+verify a uniquely named settled live probe in that exact project.
+
+Ordinary unit/fake tests must start in a fresh process with all export-capable
+Judgment/Judgeval/OTel credentials and exporter headers explicitly overridden
+empty before any app/SDK import, and `OTEL_SDK_DISABLED=true` where supported;
+or inject a proven no-export/in-memory tracer. If app validation requires a
+project string, use an obviously synthetic value such as `unit-tests-no-export`
+only after proving the initialized exporter is disabled. Merely unsetting can
+let dotenv refill variables, clearing after SDK import is too late, and
+`setdefault` can preserve a developer's live project. Reconcile named probes
+with the run ledger and require zero unexplained test-generated roots.
 
 ## Evidence vocabulary
 

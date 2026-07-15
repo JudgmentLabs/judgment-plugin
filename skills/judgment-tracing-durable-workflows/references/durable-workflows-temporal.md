@@ -69,11 +69,17 @@ request tasks, or retain the tracer and activate it at each request/consumer
 entrypoint using the installed API. Prove activation with one real submission
 and approval in Judgment; worker roots do not prove producer activation.
 
-Forward key, organization, explicit project, and endpoint overrides into the
-producer and every exporting worker. Test each real launcher with the project
-explicitly empty under a 30-second bound and guaranteed cleanup. It must fail
-before readiness with the expected error even when dotenv exists. `unset`, a
-timeout, continued serving, or unrelated failure does not pass.
+Forward key, organization, explicit project, deployment-provided project ID
+when present, and endpoint overrides into the producer and every exporting
+worker. Before each process becomes ready, require a resolved project identity
+and compare it with that expected ID when available. Otherwise, a uniquely named
+positive-control probe must settle in the exact intended project. Test every real launcher with the
+project explicitly empty and with a unique unknown name or ID of the type it
+accepts under a 30-second bound and guaranteed cleanup. Both must fail before
+readiness with the expected routing error, create nothing, and still fail when
+dotenv exists. A valid-target positive control must start. `unset`, a timeout,
+continued serving, a nonempty resolved ID alone, or unrelated failure does not
+pass.
 
 ## Replay and retry safety
 
@@ -117,17 +123,23 @@ evidence is `blocked`; stubs and scratch spans are synthetic.
 | Gate | Result | Evidence class | Exact evidence |
 | --- | --- | --- | --- |
 | Workflow model | <result> | static | Files naming the stable workflow ID, durable checkpoints, and chosen trace units |
-| Explicit routing negative | <result> | real application | Exact explicit-empty launcher command for each exporter, nonzero exit, and expected error |
+| Dependency integrity | <result> | static | Pre/post manifest and lockfile hashes/diff, frozen-lock install, and unchanged unrelated workflow/server/provider versions |
+| Routing startup and negatives | <result> | real application | Valid-target positive startup plus empty and unknown name/ID commands for each exporter with expected errors/no readiness/no creation |
+| Exact stored destination | <result> | stored Judgment | Named settled producer and worker trace/probe IDs in the exact intended project, with resolved-ID equality or read-only resolution recorded for each exporter |
 | Request separation | <result> | stored Judgment | Submit/approve trace IDs distinct from durable-work trace IDs |
 | Producer activation | <result> | stored Judgment | Real submit and approval trace IDs in the intended project; worker roots alone do not pass |
 | Fresh activity roots | <result> | stored Judgment | Raw trace/span/parent IDs proving roots are distinct from submit and not interceptor children |
-| Root lifetime | <result> | stored Judgment | Raw start/end arithmetic for every root and child |
+| Strict root/child lifetime | <result> | stored Judgment | Complete parent trees, evidence-derived timestamp precision, start/end margins for every root, and repeats for within-precision negatives |
 | Session placement | <result> | stored Judgment | Exact workflow ID on every meaningful root |
 | Suspend boundary | <result> | stored Judgment | Pre/post-suspend trace IDs and approval/timer/signal event |
 | Worker coverage | <result> | stored Judgment | Producer and every exporting worker's expected trace IDs |
 | Retry/replay | <result> | stored Judgment | Recorded attempts reconciled to labeled roots without duplicates |
+| Error/output status parity | <result> | stored Judgment | Every unrecovered producer/activity/LLM/tool failure has matching fixed safe output and raw `ERROR` status; recovered/later-success outcomes remain truthful |
 | Signal density | <result> | stored Judgment | Business-root count versus Temporal/HTTP/poll-root count |
 | Payload safety and usefulness | <result> | stored Judgment | Named mode, benign/canary raw search, bounds, parseable structured IO, and inspected attribute set |
-| Export lifecycle | <result> | stored Judgment | Last completed pre-kill and first post-restart trace IDs after bounded flush |
+| Export lifecycle | <result> | stored Judgment | Root ended before awaited bounded flush; last completed pre-kill and first post-restart trace IDs survived |
+| Ingestion settlement | <result> | stored Judgment | Post-flush raw-read timestamps and stable producer/worker span-set hashes across the named interval; complete unchanged trees and terminal IO/status |
+| Test-export isolation | <result> | stored Judgment | Exact non-live commands/time window and named live-probe ledger; zero unit/stub/fake/build/typecheck/import/smoke/dev/static-generation roots |
+| Runtime telemetry fail-open (one result per subcase) | <result> | real application | Separate producer and activity/segment scope start/enter/exit, setter/status, sanitizer/classifier, finalizer, flush throw/rejection/timeout injections; durable path once and unchanged |
 | Real workflow behavior | <result> | real application | Events/results covering submit, suspend/approval, retry, restart, and completion |
 | Stored scenario proof | <result> | stored Judgment | Project, workflow session, trace IDs, and reconciliation to recorded events/results |
