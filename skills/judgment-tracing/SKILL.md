@@ -22,6 +22,10 @@ Follow these principles for all Judgment work:
 6. **Use the right scorer**: Use prompt/hosted scorers for rubric-based judgment and Python code judges for deterministic logic, custom dependencies, or trace inspection.
 7. **Keep credentials out of chat**: Ask the user to set `JUDGMENT_API_KEY` and `JUDGMENT_ORG_ID` locally rather than pasting secrets.
 8. **Use offline agent tests before production changes**: For model, prompt, tool, or agent config changes, pull a stable dataset, collect fresh `OfflineTracer` traces for each input, then evaluate the generated offline examples in one batch. If the production agent is already traced with Judgment, leave that tracing intact and swap only the test harness initialization to `client.offline_tracer(...)`.
+9. **Trace agent work, not readback noise**: By default, exclude health checks,
+   status polling, and read-only session/transcript inspection endpoints. A test
+   client calling `GET /sessions/{id}` to verify state does not make that read a
+   meaningful agent trace.
 
 ## Mandatory Architecture Routing
 

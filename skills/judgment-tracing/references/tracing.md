@@ -88,6 +88,21 @@ finished. Start the root when that work is triggered and end it only after its
 final output and important side effects are complete. The return of a function
 is not always the end of the work it started.
 
+Do not trace every route merely because a scenario calls it. Agent-generating
+writes such as a chat turn, task submission, approval, or durable work phase are
+normally meaningful roots. Health checks, repeated status polls, and read-only
+session/transcript endpoints normally are not: they inspect already-completed
+state without running the agent. Leave routes such as `GET /health`,
+`GET /status`, and `GET /sessions/{id}` untraced unless the read itself performs
+meaningful user-facing business or agent work that needs independent debugging.
+
+This distinction also applies to verification traffic. A protected or local
+test may call a readback endpoint after every turn to assert persistence. Those
+calls are evidence about the application, not additional expected traces. Before
+claiming completion, reconcile the meaningful work ledger with stored root
+counts and calculate the ratio of meaningful roots to health/status/readback
+roots. Extra readback roots are over-instrumentation, not harmless coverage.
+
 Look specifically for APIs that return a stream, iterator, task, workflow
 handle, callback-driven result, or background job. Follow the real execution
 path until you find completion callbacks such as `onFinish`, stream-consumption
@@ -556,6 +571,7 @@ https://docs.judgmentlabs.ai/documentation/performance/tracing#distributed-traci
 | Setting session context before a root exists   | Setters have no active span to attach to         | Start the root, then set session/customer context inside it            |
 | Wrapping a function that only returns a stream | Root ends before generation and persistence      | Use the integration's post-child completion barrier, including error/abort paths |
 | Blanket-wrapping persistence helpers           | Noisy roots and excessive payload capture        | Trace only high-value operations with bounded attributes               |
+| Tracing session/status readback routes          | Verification and polling calls outnumber the agent turns they inspect | Leave read-only health/status/session/transcript endpoints untraced unless they perform independent meaningful work; reconcile expected root counts |
 | Env vars present only on the host               | Container or worker exports nothing              | Forward Judgment variables into every runtime that performs work       |
 | Missing `session_id` for chat apps             | Conversations do not group in Sessions           | Set `session_id` on each root trace in the conversation               |
 | Switching projects mid-trace                   | Spans may route incorrectly or fail to switch    | Route before the root span starts                                     |
