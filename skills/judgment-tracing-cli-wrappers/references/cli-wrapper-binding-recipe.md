@@ -69,7 +69,9 @@ failure:
 3. Record success only after mapping/persistence and the actual reply succeed.
 4. For invalid session, nonzero exit, timeout, launch failure, parse failure,
    persistence failure, or response failure, record the same stable semantic
-   error category on root and applicable CLI child.
+   error category and OpenTelemetry `StatusCode.ERROR` on the root and every
+   applicable CLI child. Set status while each span is current; a custom
+   `error` attribute alone still leaves the span looking successful.
 5. Keep original exceptions only in memory; never trace raw stderr, command,
    environment, exception text, or JSONL. End the observed root, then rethrow or
    preserve the existing handler behavior outside it.
@@ -78,7 +80,30 @@ failure:
    the tracing claim but cannot replace a valid reply or original exception.
 
 Do not create a separate copyable traced error path. Do not turn nonzero exit
-into traced success because an exit-code field exists.
+into traced success because an exit-code field exists. Tracing outcome and
+transport outcome are separate: if the existing application persists a
+nonzero result and returns HTTP 200, preserve that behavior while marking the
+CLI child and wrapper root as errors with the same safe code. Do not throw,
+retry, skip persistence, or change the response merely to make tracing easier.
+
+Use this small helper inside each active span; guard it with the same
+best-effort telemetry wrapper as every other trace-only write:
+
+```python
+from opentelemetry.trace import Status, StatusCode
+
+def mark_current_span_error(code: str, output: dict) -> None:
+    # `code` must come from a fixed allowlist, never exception or stderr text.
+    Tracer.set_output({**output, "ok": False, "error_code": code})
+    Tracer.get_current_span().set_status(Status(StatusCode.ERROR, code))
+```
+
+Call it once while `agent_cli.invoke` is current for CLI-owned failures, then
+again while the wrapper root is current. For validation, mapping, persistence,
+or response failures that occur outside CLI invocation, mark only the wrapper
+root. Return an in-memory outcome from an observed scope and rethrow the
+original exception only after that scope ends when automatic exception capture
+cannot be safely disabled.
 
 ## 4. Configure routing and payload policy
 
@@ -127,6 +152,9 @@ Run two independent real wrapper sessions. Record wrapper IDs and returned CLI
 IDs, boundedly flush, restart the wrapper, then resume both using persisted CLI
 IDs. Exercise a tool-producing task when practical and safely exercise nonzero,
 timeout, and launch failure; an untriggered existing error path is `blocked`.
+Also run the wrapper's supported fake/degraded mode as a separate regression:
+its roots must be valid and explicitly labeled fake, retain stable fake session
+IDs across restart, and make no claim of real inner-agent coverage.
 
 Reconcile recorded requests/results with settled raw Judgment data and require:
 
