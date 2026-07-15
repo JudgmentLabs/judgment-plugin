@@ -135,6 +135,12 @@ with only `exit_code: 1` hidden in output.
 An aggregate `agent_cli.invoke` child proves that the wrapper called the CLI.
 It does not prove which model calls, tools, or subagents ran inside the CLI.
 
+In particular, stock `claude -p --output-format json` returns a final result,
+session ID, and aggregate metadata. It does not expose reliable inner LLM/tool
+span timing. That mode can satisfy the wrapper baseline only. Use a documented
+hook, stream-JSON event source, native OTel, or equivalent real source before
+claiming full wrapped-agent tracing.
+
 Only claim inner-agent coverage when real hook/JSONL/OpenTelemetry evidence is
 captured and reconciled. When importing inner spans:
 
@@ -286,16 +292,27 @@ async def traced_wrapper_task(request: TaskRequest) -> TaskResult:
 
 @app.post("/tasks")
 async def create_task(request: TaskRequest):
-    result = await traced_wrapper_task(request)  # root has ended
-    flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
-    if not flushed:
-        logger.error("Judgment flush timed out after completed wrapper task")
-        # Do not call this turn restart-safe until stored evidence arrives.
-    return result.reply
+    try:
+        result = await traced_wrapper_task(request)  # root ends on return/raise
+        return result.reply
+    finally:
+        flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
+        if not flushed:
+            logger.error("Judgment flush timed out after wrapper task attempt")
+            # Do not call this turn restart-safe until stored evidence arrives.
 ```
 
 Replace the generic names and types. Preserve the first-turn late session-ID
 assignment and the root-then-flush ordering.
+
+If the subprocess can throw an error whose message or stderr is not approved
+trace data, use the same outcome-adapter shape as the request/response recipe:
+inside `traced_wrapper_task`, store a normalized error code and bounded
+sanitized outcome, mark the span with a safe error, and return the original
+exception only in memory. Re-raise it from `create_task` after the observed
+root has ended; the outer `finally` still flushes that failed root. Do not let
+the tracing decorator automatically serialize raw stderr, environment values,
+or command lines.
 
 For a deliberate restart test, do not restart the wrapper until that completion
 barrier succeeds or the export failure has been recorded as blocking the

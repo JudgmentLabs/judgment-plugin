@@ -228,22 +228,32 @@ async def traced_plan(request: PlanRequest) -> PlanResult:
 
 @activity.defn(name="plan")
 async def plan_activity(request: PlanRequest) -> PlanResult:
-    result = await traced_plan(request)  # the Judgment root has ended
-    flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
-    if not flushed:
-        activity.logger.error(
-            "Judgment flush timed out after completed plan activity"
-        )
-        # Production policy may still return the durable result, but tracing
-        # verification must mark this checkpoint as not trace-safe.
-    return result
+    try:
+        # The Judgment root ends when traced_plan returns or raises.
+        return await traced_plan(request)
+    finally:
+        flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
+        if not flushed:
+            activity.logger.error(
+                "Judgment flush timed out after plan activity attempt"
+            )
+            # Production policy may preserve the durable result/error, but
+            # tracing verification must mark this attempt not trace-safe.
 ```
 
-Apply the same completion barrier to every activity root that must survive an
-immediate worker kill. Do not put `force_flush()` inside `traced_plan`, launch
-it as fire-and-forget work, or wait until worker shutdown. Match the installed
-SDK signature; current Python Judgeval 1.2.x returns a boolean from
-`force_flush(timeout_millis)`.
+Apply the same completion barrier to successful and failed activity roots that
+must survive an immediate worker kill. Do not put `force_flush()` inside
+`traced_plan`, launch it as fire-and-forget work, or wait until worker
+shutdown. Match the installed SDK signature; current Python Judgeval 1.2.x
+returns a boolean from `force_flush(timeout_millis)`.
+
+If raw activity exceptions are not approved trace data, do not rethrow them
+from inside the observed business function. Record a normalized semantic
+failure output and safe error status, return an outcome object carrying the
+original exception only in memory, then rethrow from the outer activity after
+the observed root has ended. Its `finally` block must still perform the bounded
+flush. This keeps the failed retry attempt visible without copying raw provider
+or tool error text into the trace.
 
 `safe_plan_items` must retain bounded plan meaning, such as safe item titles
 and instructions, not only their count. Apply the same rule to synthesis: a

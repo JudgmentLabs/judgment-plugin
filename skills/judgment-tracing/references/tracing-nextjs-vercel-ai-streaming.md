@@ -13,8 +13,8 @@ also does not cover Edge-runtime routes or `toUIMessageStreamResponse`, whose
 telemetry, persistence, and abort mechanics need their own version-specific
 proof.
 
-Read the general tracing guide too, but complete every applicable gate in this
-file before saying the integration works.
+Use this focused recipe first. Fetch the general guide only for an unresolved
+SDK question; do not load it automatically.
 
 ## The required trace
 
@@ -140,14 +140,25 @@ const result = Tracer.getOTELTracer().startActiveSpan(
       },
       onError({ error }) {
         Tracer.setError(safeTraceError(error), rootSpan);
+        Tracer.setOutput({
+          status: "error",
+          errorCode: safeTraceErrorCode(error),
+        }, rootSpan);
       },
       onAbort() {
         Tracer.setAttribute("agent.aborted", true, rootSpan);
+        Tracer.setOutput({ status: "aborted" }, rootSpan);
       },
     });
   },
 );
 ```
+
+Also handle a synchronous `streamText(...)` construction failure: set a
+bounded semantic error output and sanitized error status, end the root, and
+await the same bounded export path from an outer `catch`/`finally`. A throw
+before the completion callbacks are registered must not leave an open root or
+an error root with missing `judgment.output`.
 
 `sanitizeAndBoundTraceText` and `persistCompletedTurn` are placeholders: replace
 them with the application's real sanitization and persistence behavior. Do not
@@ -244,6 +255,11 @@ function safeTraceError(error: unknown): Error {
   return new Error(
     safe.text ? `${name}: ${safe.text}` : `${name}: message omitted from tracing`,
   );
+}
+
+function safeTraceErrorCode(error: unknown): string {
+  const name = error instanceof Error ? error.name : "Error";
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name) ? name : "Error";
 }
 ```
 
@@ -362,7 +378,13 @@ async function flushWithoutBreakingTheCompletedResponse(): Promise<void> {
 }
 
 const finalize = (error?: unknown): Promise<void> => {
-  if (error) Tracer.setError(safeTraceError(error), rootSpan);
+  if (error) {
+    Tracer.setError(safeTraceError(error), rootSpan);
+    Tracer.setOutput({
+      status: "error",
+      errorCode: safeTraceErrorCode(error),
+    }, rootSpan);
+  }
   return (finalization ??= (async () => {
     try {
       await streamDone;

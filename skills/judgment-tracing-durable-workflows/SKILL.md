@@ -17,9 +17,10 @@ completely before editing. Treat its completion gate as binding.
   the interaction with the exact workflow ID as `judgment.session_id`.
 - Prefer meaningful pre-suspend and post-suspend segment roots only when one
   component can reliably own, finalize, and export each whole segment.
-- Otherwise use the documented fresh activity/execution-root fallback. It is
-  complete only when each root has faithful semantic input/output, correct
-  session identity, useful children, and no malformed cross-process tree.
+- Otherwise use the documented fresh activity/execution-root fallback. It is a
+  valid safe fallback—not the canonical segment model—when each root has
+  faithful semantic input/output, correct session identity, useful children,
+  and no malformed cross-process tree. Report the modeling limitation.
 - Exclude or sample repeated status polling. Do not let Temporal transport or
   interceptor shells dominate the business story.
 
@@ -42,12 +43,17 @@ verified or complete.
    endpoint overrides into the producer and every exporting worker.
 2. Keep workflow code replay-safe; do not call networked tracing APIs from
    deterministic workflow code.
-3. Decide provider capture from the installed SDK version. Do not use an
-   automatic wrapper that stores unapproved history, schemas, files, or
-   secrets merely to obtain LLM metadata.
-4. End and boundedly flush each completed worker-owned root before the durable
-   activity acknowledges completion.
-5. Make retry attempts visible without double-instrumenting or duplicating the
+3. Use a provider integration only after its installed-version capture
+   controls pass. Do not store unapproved history, schemas, files, or secrets
+   merely to obtain LLM metadata.
+4. End and boundedly flush each worker-owned root from an outer `finally` path
+   before the activity returns or rethrows. This applies to successful and
+   failed attempts. Production may remain fail-open on telemetry; failed
+   export blocks the tracing-verification claim, not the durable result.
+5. If raw activity exceptions are not approved trace data, set a normalized
+   semantic failure output/status inside the root and rethrow the original only
+   after the observed scope ends.
+6. Make retry attempts visible without double-instrumenting or duplicating the
    successful logical activity.
 
 ## Completion gate
@@ -68,4 +74,5 @@ work, retry, and worker restart. Inspect stored Judgment roots and prove:
 - no root was acknowledged before its bounded export attempt completed.
 
 Label static, synthetic, real-application, and stored-platform evidence
-separately in the final report.
+separately in the final report. Use `pass`, `fail`, or `blocked` for each gate;
+a stubbed activity/provider is synthetic and cannot prove the real workflow.

@@ -34,6 +34,11 @@ completely before editing.
 Never synthesize inner spans or describe an aggregate subprocess span as full
 agent tracing.
 
+Stock `claude -p --output-format json` exposes the final result and CLI session
+metadata, not trustworthy inner LLM/tool timing. Treat that mode as wrapper
+baseline. Claim full coverage only when a documented hook, stream JSON, OTel,
+or native source is actually enabled and its records are reconciled.
+
 ## Non-negotiable implementation gates
 
 1. Require an explicit project. Missing project configuration must fail before
@@ -44,8 +49,13 @@ agent tracing.
    not redaction; omit-only metadata makes the wrapper behavior-blind and must
    be reported as incomplete.
 4. End the observed wrapper root, then run an awaited, bounded flush in the
-   outer route before returning or crossing the tested restart checkpoint.
-5. If inner records stream before task completion, emit/update the finalized
+   outer route's `finally` path before returning or rethrowing across the
+   tested restart checkpoint. Production may stay fail-open on telemetry;
+   missing export blocks the tracing claim.
+5. If raw subprocess exceptions or stderr are not approved trace data, set a
+   normalized semantic failure output/status inside the root and rethrow the
+   original only after the observed scope ends.
+6. If inner records stream before task completion, emit/update the finalized
    root last so online evaluation sees complete children and final IO.
 
 ## Completion gate
@@ -64,4 +74,5 @@ evidence must prove:
   evidence, otherwise the result is labeled wrapper baseline.
 
 Label evidence as static, synthetic, real application, or stored Judgment
-evidence. A fake CLI smoke does not prove real inner-agent tracing.
+evidence and mark each gate `pass`, `fail`, or `blocked`. A fake CLI smoke does
+not prove real inner-agent tracing.

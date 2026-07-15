@@ -40,11 +40,14 @@ non-empty status object sufficient.
    dynamic trace scope.
 2. Confirm every iteration is a fresh parentless trace. `fork: true` alone is
    not proof of async-context detachment.
-3. After each iteration root ends, perform an awaited, bounded flush before
-   advancing to or acknowledging the next durable checkpoint.
-4. Generate a random boot-time UUID once per process and attach it as the
-   process/container instance marker. Do not use only hostname plus PID; both
-   may repeat after a container restart.
+3. After each iteration root ends on success or failure, perform an awaited,
+   bounded flush from the outer loop's `finally` path. Production may continue
+   from durable state when telemetry fails, but the experiment must mark that
+   checkpoint's tracing verification blocked.
+4. Prefer a random boot-time UUID as the tracer resource attribute
+   `service.instance.id`. If the installed SDK cannot set that resource, attach
+   the UUID to every iteration root and report the limitation. Do not use only
+   hostname plus PID; both may repeat after a container restart.
 5. Require an explicit project and propagate complete routing into every loop
    process.
 6. Disable or avoid automatic provider capture that retains history, system
@@ -67,4 +70,5 @@ Judgment evidence and prove:
 - the final pre-kill iteration was exported before the process died.
 
 Separate static, synthetic, real-application, and stored-platform evidence in
-the final report.
+the final report with `pass`, `fail`, or `blocked` for each gate. Do not call a
+fake model run or missing raw-span inspection live/end-to-end evidence.

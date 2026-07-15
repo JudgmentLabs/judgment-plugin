@@ -62,8 +62,10 @@ cold-start/restart turns. Stored Judgment evidence must prove:
 - pre-restart and first post-restart roots both arrive completely;
 - cancellation stops upstream work and records the correct root outcome;
 - explicit routing reaches the intended existing project; and
-- a benign canary survives the approved sanitizer while secrets, file bodies,
-  tool schemas, long history, and arbitrary unapproved markers do not.
+- in approved/conservative mode, a benign canary survives while exercised
+  credential/auth canaries, file bodies, tool schemas, and long history do
+  not; in strict-omission mode, all free text is absent and usefulness remains
+  explicitly blocked.
 
 If any check is synthetic or unavailable, label it that way instead of calling
 the integration verified.

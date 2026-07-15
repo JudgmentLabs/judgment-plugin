@@ -113,7 +113,7 @@ current function-wrapper API, the shape is:
 
 ```typescript
 async step(run: RunState): Promise<RunState> {
-  return Tracer.observe(
+  const outcome = await Tracer.observe(
     async () => {
       Tracer.setSessionId(run.id);
       Tracer.setInput({
@@ -133,14 +133,18 @@ async step(run: RunState): Promise<RunState> {
         await this.store.saveRun(run);
 
         Tracer.setOutput(summarizeIterationOutcome(decision, result, run));
-        return run;
+        return { state: run, error: undefined };
       } catch (error) {
         const message = safeError(error);
         run.status = "failed";
         run.error = message;
         await this.store.saveRun(run);
         Tracer.setOutput({ status: "failed", error: message });
-        throw error;
+        // Record a normalized safe exception inside the span. Returning the
+        // original exception only in memory prevents the decorator from
+        // automatically copying its raw message into trace attributes.
+        Tracer.setError(new Error("agent_iteration_failed"));
+        return { state: run, error };
       }
     },
     {
@@ -153,6 +157,10 @@ async step(run: RunState): Promise<RunState> {
       fork: true,
     },
   )();
+
+  // Preserve application behavior after the observed scope has ended.
+  if (outcome.error !== undefined) throw outcome.error;
+  return outcome.state;
 }
 ```
 
@@ -248,13 +256,15 @@ request ID. Verify from stored roots that:
 - all completed pre-restart iterations are visible in the Sessions view; and
 - no zero-duration segment root is required for session continuity.
 
-Add a process/container instance attribute when the SDK/runtime does not do so
-automatically. It should change after restart while the session ID stays the
-same. Create a random boot UUID once at module/bootstrap initialization and
-attach that value to every root from that process, for example
-`const processBootId = randomUUID()`. Do not use hostname plus PID alone in a
-container; both can be reused after restart and falsely imply that one process
-survived. Never invent a new run/session ID merely to mark the restart.
+Set a process/container instance attribute that changes after restart while
+the session ID stays the same. Prefer generating a random boot UUID once at
+module/bootstrap initialization and installing it as the tracer resource
+attribute `service.instance.id`. If the installed Judgeval API cannot set that
+resource, attach the UUID to every root (for example
+`agent.process_boot_id = processBootId`) and report that fallback. Do not use
+hostname plus PID alone in a container; both can be reused after restart and
+falsely imply that one process survived. Never invent a new run/session ID
+merely to mark the restart.
 
 ## Export lifecycle
 
@@ -284,21 +294,28 @@ async function boundedForceFlush(timeoutMs = 5_000): Promise<void> {
   }
 }
 
-const next = await this.step(run); // the observed iteration root has ended
-let checkpointTraceSafe = false;
-try {
-  await boundedForceFlush();
-  checkpointTraceSafe = true;
-} catch (error) {
-  // Keep telemetry failure observable without corrupting the saved agent state.
-  console.error("Judgment iteration flush failed", error);
-}
+async function stepAndFlush(
+  run: RunState,
+  step: (run: RunState) => Promise<RunState>,
+): Promise<RunState> {
+  let next: RunState | undefined;
+  let checkpointTraceSafe = false;
+  try {
+    next = await step(run); // observed root ends on return or throw
+    return next;
+  } finally {
+    try {
+      await boundedForceFlush();
+      checkpointTraceSafe = true;
+    } catch (error) {
+      // Keep telemetry failure observable without corrupting saved agent state.
+      console.error("Judgment iteration flush failed", error);
+    }
 
-// The agent state is durable even if telemetry failed, so production policy
-// may continue the loop. Do not report this checkpoint as trace-safe or use it
-// as the deliberate restart point until a bounded flush attempt succeeds.
-if (!checkpointTraceSafe) {
-  reportTraceExportFailure(next.id, next.iteration);
+    if (!checkpointTraceSafe) {
+      reportTraceExportFailure(run.id, next?.iteration ?? run.iteration);
+    }
+  }
 }
 ```
 
@@ -309,7 +326,8 @@ Inspect the installed version before copying the exact call.
 Do not swallow a failed flush and then call the checkpoint trace-safe. The
 application's state can remain durable without making telemetry a dependency,
 but the tracing verification is blocked until export succeeds or the missing
-iteration is observed after the normal exporter delay.
+iteration is observed after the normal exporter delay. The outer `finally`
+must run after both successful and failed iteration attempts.
 
 Do not rely only on graceful process shutdown. The adversarial case is a kill
 immediately after a persisted checkpoint. The last fully completed
