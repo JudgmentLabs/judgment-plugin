@@ -10,7 +10,11 @@ type, existing consumers/tees, persistence callbacks, and cancellation path.
 Then load exactly one binding recipe before the first edit:
 
 - Next.js **Node runtime** + Vercel AI SDK 5/6 `streamText` text response:
-  `references/nextjs-ai-sdk-v5-v6-binding-recipe.md`.
+  `references/nextjs-ai-sdk-v5-v6-binding-recipe.md`. After dependencies are
+  installed, resolve the directory containing this selected `SKILL.md`, then
+  run `node <skill-directory>/scripts/inspect-ai-sdk-contract.mjs <app-root>`.
+  The script is bundled with the skill, not located in the target repository.
+  Retain its JSON lifecycle evidence before editing finalization code.
 - Any other finite stream/deferred response with a proven completion owner:
   `references/streaming-lifecycle.md`.
 

@@ -21,3 +21,23 @@ jobs:
 
       - name: Validate Claude Code plugin and marketplace
         run: claude plugin validate .
+
+      - name: Validate streaming contract inspector
+        run: |
+          set -euo pipefail
+          inspector=skills/judgment-tracing-streaming-serverless/scripts/inspect-ai-sdk-contract.mjs
+          node --check "$inspector"
+
+          ai5="$RUNNER_TEMP/ai-sdk-5"
+          ai6="$RUNNER_TEMP/ai-sdk-6"
+          mkdir -p "$ai5" "$ai6"
+          npm install --prefix "$ai5" --package-lock=false --ignore-scripts --no-audit --no-fund ai@5.0.210
+          npm install --prefix "$ai6" --package-lock=false --ignore-scripts --no-audit --no-fund ai@6.0.226
+
+          node "$inspector" "$ai5" | tee "$RUNNER_TEMP/ai-sdk-5-contract.json"
+          node "$inspector" "$ai6" | tee "$RUNNER_TEMP/ai-sdk-6-contract.json"
+
+          if node "$inspector" "$RUNNER_TEMP/no-ai-sdk"; then
+            echo "Inspector must fail closed when the installed AI SDK is absent."
+            exit 1
+          fi

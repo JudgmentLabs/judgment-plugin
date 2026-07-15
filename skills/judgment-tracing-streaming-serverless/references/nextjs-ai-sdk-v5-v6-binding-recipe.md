@@ -4,6 +4,12 @@ Read this file completely only when the real path is a Next.js Node-runtime
 route returning a Vercel AI SDK 5/6 `streamText` text response. Confirm the
 major version in `package.json` and the lockfile. Do not apply it to AI SDK 7,
 Edge runtime, `toUIMessageStreamResponse`, WebSockets, or indefinite streams.
+After dependencies are installed, run the bundled
+`node <skill-directory>/scripts/inspect-ai-sdk-contract.mjs <app-root>`, where
+`<skill-directory>` is the directory containing the selected streaming
+`SKILL.md`, not the target repository or this `references/` directory. Keep its
+JSON as static evidence. A nonzero result or unrecognized installed source
+blocks this binding; do not continue from version assumptions.
 
 ## Contents
 
@@ -99,6 +105,12 @@ cancellation, or persistence result. It blocks tracing verification.
   repurpose one to make tracing easier. Identify the existing application owner
   for each and require a public completion barrier covering every consumer that
   belongs to this trace. The first consumer to finish is not such a barrier.
+- Retain the promise returned by every pre-existing programmatic consumer at
+  its existing call site. Observing that promise does not add, move, or
+  repurpose a consumer; discarding it with `void` loses candidate settlement
+  evidence. Use it only after installed-source proof shows it resolves after
+  the outer framework span. If several consumers belong to one trace, the
+  barrier must cover all of them.
 - Inspect AI SDK result getters too: do not use a promise such as
   `finishReason` as a barrier if that installed version starts
   `consumeStream()` internally.
@@ -123,6 +135,17 @@ first.
 
 ## 5. Finalize in binding order
 
+Before writing the finalizer, inspect the installed AI SDK source or source map
+and record the exact order of `onFinish`, `onError`, `onAbort`, consumer
+completion, and outer `ai.streamText` span end. In supported AI SDK 5/6 source,
+`onFinish` and `onError` run before `rootSpan.end()`, so an application-root end
+or final `forceFlush()` reachable from either callback is structurally early.
+The installed source also does not await `onAbort`, so that callback cannot own
+awaited finalization; do not infer its exact position from that fact alone.
+These callbacks may record an in-memory outcome only. Final root end and flush
+must be owned outside them after a proven settlement barrier; without one,
+report the gate `blocked`.
+
 Use one idempotent finalizer on success, error, persistence failure, and cancel:
 
 1. stop/settle application work according to the real terminal outcome;
@@ -137,6 +160,11 @@ Use one idempotent finalizer on success, error, persistence failure, and cancel:
 hook, or a second consumer is not a framework-child settlement signal. If no
 reliable signal exists, report the child-window gate `blocked`; do not end the
 root early and call it complete.
+
+Never final-flush while a framework child may still be open. That can export a
+root and inner children before their parent arrives. A trace with a non-root
+span whose parent is absent fails tree completeness and cannot pass timing even
+when the root covers every span that happened to arrive.
 
 When the response consumer belongs to this trace, its wrapper may delay only
 final EOF while finalization settles. Its cancel branch aborts upstream first,
@@ -202,12 +230,28 @@ provider/tool child, event, and resource attribute. The marker survives; all
 canaries, accumulated history, system prompts, tool schemas, files, and
 unapproved payloads are absent.
 
-Keep the AI SDK's existing tool span when it is active during `execute`; attach
-bounded semantic tool IO/error and a stable business name when the installed
-API proves that rename targets the correct span. Otherwise retain the
-framework business-name attribute and report the scanability limitation. Add
-one manual child only if there is no usable framework span; never duplicate a
-tool merely to improve display names.
+First prove from the installed source that tool `execute` runs inside the
+framework `ai.toolCall` active span. With bulk framework input/output capture
+disabled, enrich that span inside each existing executor; do not add a duplicate:
+
+```ts
+const toolSpan = Tracer.getCurrentSpan();
+if (toolSpan) {
+  toolSpan.updateName(`application.tool.${businessToolName}`);
+  Tracer.setInput(safeBoundedInput, toolSpan);
+}
+
+const result = await existingToolWork();
+
+if (toolSpan) Tracer.setOutput(safeBoundedOutput, toolSpan);
+return result;
+```
+
+Apply the same safe normalized error policy on failure. A generic
+`ai.toolCall` with missing, `null`, or empty-object Judgment IO fails tool
+usefulness. If the installed API does not expose the correct active span,
+retain its business-name attribute, report scanability/IO `blocked`, and do not
+duplicate the tool merely to improve display.
 
 ## 7. Prove the production path
 
@@ -216,6 +260,15 @@ tool, model-error, persistence-error, real client-abort, and cold-start/restart
 turns. Record exact session/customer IDs and returned application outcomes.
 Immediately restart after a completed bounded export where applicable, wait for
 ingestion, then reconcile settled raw Judgment data.
+
+Evidence is path-specific. An error-path trace cannot pass normal success,
+tool, persistence, cancellation, or general finalization. Inspect at least one
+real successful tool-bearing stored turn before those gates pass. Verify every
+parent resolves before timing arithmetic; a partial tree is never a timing
+pass. A finite client-owned HTTP stream has a cancellation gate: missing signal
+propagation, unexercised abort, or undocumented detached completion is
+`blocked` or failed, never `not-applicable`. Do not claim the integration
+complete while a required path remains blocked.
 
 Trigger the abort while a response-body read is pending. This is the binding
 test for the extra-consumer/backpressure race; an abort before stream reading or
