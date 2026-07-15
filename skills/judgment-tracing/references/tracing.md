@@ -178,6 +178,19 @@ particular, do not inherit a short submission request as the parent of an
 hours-long job, and verify `session_id` on each stored root rather than assuming
 that setting it inside an activity updated its ancestors.
 
+For a long-running loop that durably saves state after each model decision,
+read the focused
+[checkpointed-loop reference](tracing-checkpointed-agent-loops.md). The saved
+iteration is normally the trace boundary and the run ID is the session. A
+process-lifetime segment root can lose many already-completed iterations when
+the process is killed before that outer root ends.
+
+For a persistent wrapper around an external agent CLI, read the focused
+[agent-CLI wrapper reference](tracing-agent-cli-wrappers.md). The underlying
+CLI session returned by the first subprocess call is normally the durable
+`session_id`; set it on the still-active wrapper root before finalization and
+verify resume continuity after a wrapper restart.
+
 #### Confirm initialization in the real runtime
 
 Tracer initialization and observed code must use the same active tracer
@@ -538,4 +551,7 @@ https://docs.judgmentlabs.ai/documentation/performance/tracing#distributed-traci
 | Treating a durable job as one request trace     | A short submit root finalizes before worker children or stays open across an indefinite suspend | End traces at durable checkpoints and group restart-safe work traces with the workflow ID as `session_id` |
 | Using a Temporal interceptor as the trace design | Framework shells form a malformed mega-trace or drown out business work | Choose application request/segment/activity roots first; use the interceptor only where it supports that model |
 | Setting a durable session only inside a child   | The activity shows an ID but the root and Sessions view remain ungrouped | Set the exact workflow ID after each application root becomes active, then verify the raw root attribute |
+| One root for a checkpointed autonomous loop     | A process kill leaves the outer root unfinalized and hides many completed decisions from Sessions/evaluation | Trace each durably saved iteration and group iterations with the stable run ID |
+| Grouping an agent CLI by only the wrapper ID     | Judgment sessions do not reflect the real CLI conversation resumed across turns | Set the returned/resumed CLI session ID on each wrapper-turn root; keep wrapper ID as an attribute |
+| Forwarding key/org but not project or endpoint  | The wrapper runs but exports to a guessed, nonexistent, or wrong destination | Forward and verify key, org, explicit project, and supported endpoint override in the real runtime |
 | Guessing SDK APIs from memory                  | Outdated code or mixed SDK generations           | Fetch docs and match the installed SDK version                        |

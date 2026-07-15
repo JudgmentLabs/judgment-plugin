@@ -49,6 +49,20 @@ miss in the general tracing guide.
   trace boundaries for you. Do not let a short submit request become the root
   of work that continues after the request, and do not stretch one root across
   a durable suspend.
+- If the application contains a **long-running autonomous loop that persists
+  state and resumes after process death**, read
+  [references/tracing-checkpointed-agent-loops.md](references/tracing-checkpointed-agent-loops.md)
+  completely. Use the smallest completed decision step that is durably saved
+  as the default trace boundary. Do not put many independently durable
+  iterations under one process-lifetime root that disappears when the process
+  is killed.
+- If a service **wraps an external agent CLI and persists that CLI's session
+  ID for resume**, read
+  [references/tracing-agent-cli-wrappers.md](references/tracing-agent-cli-wrappers.md)
+  completely. Use one wrapper request as the trace, but group turns by the
+  underlying agent's stable session ID. Forward the full Judgment connection
+  configuration into the real wrapper runtime and verify a real resumed turn,
+  not only a fake subprocess smoke.
 
 ## Use Case References
 
@@ -57,6 +71,10 @@ miss in the general tracing guide.
   [references/tracing-nextjs-vercel-ai-streaming.md](references/tracing-nextjs-vercel-ai-streaming.md)
 - Temporal and other durable workflows:
   [references/tracing-durable-workflows-temporal.md](references/tracing-durable-workflows-temporal.md)
+- Checkpointed long-running agent loops:
+  [references/tracing-checkpointed-agent-loops.md](references/tracing-checkpointed-agent-loops.md)
+- Persistent agent CLI wrappers:
+  [references/tracing-agent-cli-wrappers.md](references/tracing-agent-cli-wrappers.md)
 - Creating evaluations and choosing scorers: [references/evaluations.md](references/evaluations.md)
 - Testing agent changes with OfflineTracer: [references/agent-testing.md](references/agent-testing.md)
 - Creating Python code judges: [references/code-judges.md](references/code-judges.md)
