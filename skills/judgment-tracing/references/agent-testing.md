@@ -28,6 +28,19 @@ spans before building the offline test. At minimum, trace the agent entrypoint a
 the root span. Add tool, retrieval, and LLM spans when the judge needs those
 details to decide whether the agent behaved correctly.
 
+## Contents
+
+- [When to use](#when-to-use)
+- [Core pattern](#core-pattern)
+- [Existing traced agent path](#existing-traced-agent-path)
+- [If tracing is not installed](#if-tracing-is-not-already-installed)
+- [Python example](#python-example)
+- [Implementation notes](#implementation-notes)
+- [CI integration](#ci-integration)
+- [Judges for offline tests](#judges-for-offline-tests)
+- [Common variations](#common-variations)
+- [How to explain it](#how-to-explain-offline-testing-to-users)
+
 ## When to Use
 
 - Comparing a new model against the current production model.

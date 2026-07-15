@@ -4,6 +4,16 @@ Use this recipe for a bounded request or chat turn whose business work really
 finishes before the response returns. Adapt names to the application; do not
 copy placeholders as production names.
 
+## Contents
+
+- [Pin routing](#1-pin-routing-and-prove-the-negative-case)
+- [Choose a payload policy](#2-choose-a-payload-policy-before-writing-spans)
+- [Trace the completed turn](#3-trace-the-completed-turn-including-safe-failures)
+- [Use safe manual LLM spans](#4-use-safe-manual-llm-spans-when-integrations-over-capture)
+- [Trace tool outcomes](#5-give-each-tool-child-a-safe-semantic-result)
+- [Verify settled evidence](#6-verify-raw-settled-evidence)
+- [Report the evidence table](#7-use-an-honest-final-evidence-table)
+
 ## 1. Pin routing and prove the negative case
 
 Require the intended project. Do not default it to the agent name:
@@ -33,7 +43,9 @@ Choose an approved sanitizer, a conservative credential/auth baseline that
 requires privacy review, or strict omission (which blocks semantic evidence).
 Apply it before bounding request text, final replies, provider/tool errors,
 shell commands, and tool output. Prefer an operation category and safe business
-summary over raw commands or file bodies.
+summary over raw commands or file bodies. Leave serialization margin below the
+platform attribute limit and prove settled structured
+`judgment.input`/`judgment.output` still parses.
 
 ## 3. Trace the completed turn, including safe failures
 
@@ -44,6 +56,7 @@ exception.
 
 ```python
 from dataclasses import dataclass
+import re
 from opentelemetry.trace import Status, StatusCode
 from judgeval import Tracer
 
@@ -70,6 +83,15 @@ def mark_safe_error(code: str) -> None:
     Tracer.set_output({"ok": False, "error_code": code})
     Tracer.get_current_span().set_status(Status(StatusCode.ERROR, code))
 
+def safe_error_code(error: Exception) -> str:
+    try:
+        code = classify_error(error)
+        if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", code):
+            return code
+    except Exception:
+        pass
+    return "unexpected_application_error"
+
 def set_turn_context(session_id: str, message: str) -> None:
     Tracer.set_session_id(session_id)
     Tracer.set_input({"request": sanitize_and_bound(message)})
@@ -86,9 +108,10 @@ def traced_turn(session_id: str, message: str) -> TurnOutcome:
     )
     try:
         reply = run_real_agent_turn(session_id, message)
-    except ExpectedApplicationError as exc:
+    except Exception as exc:
+        code = safe_error_code(exc)
         best_effort_trace_write(
-            "turn error", lambda: mark_safe_error(classify_error(exc))
+            "turn error", lambda: mark_safe_error(code)
         )
         return TurnOutcome(error=exc)
     best_effort_trace_write(
@@ -230,16 +253,20 @@ Run those trace writes through the best-effort guard above.
 
 Run the real server and a real provider-backed turn. Also exercise a tool and a
 caught tool failure, a service restart, and the missing-project startup case.
-Use non-real canaries for API/provider keys, authorization, cookies/sessions,
-secret/token/password assignments, URL credentials, and private-key blocks.
+Use non-real canaries for OpenAI-style `sk-`, GitHub-style `ghp_` and
+`github_pat_`, other installed API/provider keys, authorization,
+cookies/sessions, secret/token/password assignments, URL credentials, and
+private-key blocks.
 Place them before and beyond the bound and in output/error fields; retain a
 benign semantic marker.
 
 After ingestion settles, inspect raw attributes for every span in the matching
 session. Prove root count, root input/output, child windows, exact session ID,
 tool error status, no readback roots, and post-restart export. Search all raw
-attribute values—not only UI previews—for both credential markers, histories,
+attribute values—not only UI previews—for all credential canaries, histories,
 schemas, file bodies, static prompts, and environment values.
+Parse the settled structured root input/output; a bounded preview is not proof
+that platform clipping preserved valid JSON.
 
 Record raw `trace_id`, `span_id`, and `parent_span_id` for the turn root and
 every local LLM/tool child. Require an empty root parent only without deliberate
@@ -260,7 +287,7 @@ The final response must include:
 | LLM evidence | <result> | stored Judgment | provider/model/token metadata plus bounded per-call semantic IO, or explicit metadata-only limitation |
 | Tool identity and outcome | <result> | stored Judgment | each executed business tool's name and bounded semantic input/output-or-error |
 | Recovered tool error | <result> | stored Judgment | normalized error child status plus successful recovered root outcome |
-| raw payload safety | <result> | stored Judgment | sanitizer mode, canaries, inspected attributes |
+| raw payload safety | <result> | stored Judgment | sanitizer mode, canaries, bounds, parseable structured IO, inspected attributes |
 | restart/export | <result> | stored Judgment | pre/post-restart trace IDs |
 
 Use `not-applicable` only when the architecture genuinely lacks a gate. Missing

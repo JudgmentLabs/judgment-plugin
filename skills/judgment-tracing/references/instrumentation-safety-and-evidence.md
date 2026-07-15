@@ -3,6 +3,14 @@
 Use this optional deep reference with the architecture-specific guide when one
 of these risks is present.
 
+## Contents
+
+- [Fail closed and fail open](#fail-closed-at-startup-fail-open-during-application-work)
+- [Safe, useful payloads](#safe-useful-payloads)
+- [Binding parentage proof](#binding-parentage-proof)
+- [Real explicit-empty check](#real-explicit-empty-launcher-check)
+- [Evidence vocabulary](#evidence-vocabulary)
+
 ## Fail closed at startup, fail open during application work
 
 Fail startup before readiness when required Judgment routing is missing. In
@@ -69,9 +77,12 @@ that removes known credential/auth material and requires privacy review; or
 
 Truncation is not sanitization. Sanitize the final composed field before
 bounding it, including error summaries and values built from several sources.
-Do not claim a short credential redactor handles general PII or domain secrets.
+Leave serialization margin below the platform attribute limit and prove stored
+structured IO remains parseable. Do not claim a short credential redactor
+handles general PII or domain secrets.
 
-For conservative-mode proof, use non-real canaries for provider/API-key
+For conservative-mode proof, use non-real canaries for OpenAI-style `sk-`,
+GitHub-style `ghp_` and `github_pat_`, other installed-provider/API-key
 prefixes, bearer/basic authorization, cookies/sessions, secret/token/password
 assignments, URL credentials, and private-key blocks.
 

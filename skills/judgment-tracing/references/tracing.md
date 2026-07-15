@@ -3,6 +3,14 @@
 Instrument LLM and agent applications with Judgment tracing, following best
 practices and tailored to the user's codebase.
 
+## Contents
+
+- [When to use](#when-to-use)
+- [Workflow](#workflow)
+- [Framework integrations](#framework-integrations)
+- [Always explain why](#always-explain-why)
+- [Common mistakes](#common-mistakes)
+
 ## When to Use
 
 - Setting up Judgment tracing in a new project

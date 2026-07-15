@@ -102,14 +102,16 @@ Do not report completion until all six are backed by evidence:
    distributed propagation, prove the expected upstream trace/span chain and
    that the local business root still owns the complete local lifetime,
    session, and semantic IO. A short accidental framework parent is a failed
-   boundary.
+   boundary. From settled raw timestamps, compute `root_end >= max(child_end)`
+   with no grace period; any positive child overrun fails the window gate.
 2. **Routing:** require an explicit intended project and propagate key,
    organization, project, and every configured endpoint override to each real
    exporter process. Prove the real startup fails with the project set to an
    empty value even when dotenv files exist; an `unset` test that dotenv can
    repopulate is not evidence. No guessed fallback or silent no-op tracer.
 3. **Root evidence:** the root contains safe, bounded, faithful semantic input
-   and final result/error, not only metadata or omission markers.
+   and final result/error, not only metadata or omission markers. Structured
+   root IO must remain parseable after platform storage clipping.
 4. **Capture policy:** inspect the installed integration's actual capture
    controls. Do not use a provider wrapper that stores unapproved histories,
    files, schemas, system prompts, or secrets merely to obtain LLM metadata.

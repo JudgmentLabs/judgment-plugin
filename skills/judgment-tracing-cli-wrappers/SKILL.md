@@ -5,77 +5,32 @@ description: Use when adding or auditing Judgment tracing for a service that inv
 
 # Judgment Tracing for Persistent Agent CLI Wrappers
 
-Read
-`references/agent-cli-wrappers.md`
-completely before editing.
+Inspect the HTTP/business boundary, CLI runner, returned session format,
+persistent wrapper-to-CLI mapping, resume path, failure behavior, and launcher.
+Then read `references/cli-wrapper-binding-recipe.md` completely before the
+first edit. It is the authoritative implementation contract.
 
-## Required model
+Do not load the long reference by default. Read only the named section of
+`references/agent-cli-wrappers.md` when its condition is present:
 
-- One completed wrapper task is one root from accepted prompt through CLI
-  completion, persisted mapping, and final reply.
-- Put a bounded safe task prompt and final returned reply on the root.
-- Set `judgment.session_id` to the underlying CLI session ID. On the first
-  turn, keep the root active until the CLI returns its ID; on later turns,
-  prove the persisted ID equals the value passed to resume.
-- Keep the wrapper’s own request/session ID as a separate attribute.
-- Record the real CLI invocation as a child with mode, resume state, duration,
-  exit code, and sanitized error category.
+- **The first-turn identity problem** — the framework/decorator cannot assign
+  the returned CLI session to the still-active first-turn root or failures are
+  being serialized before rethrow.
+- **Inner agent spans** — a real hook, JSONL, OTel, or native source exists and
+  linked/nested inner coverage is actually in scope.
+- **Export lifecycle** — the installed SDK flush signature or outer post-root
+  completion barrier is unclear or a pre-restart turn is missing.
+- **Mandatory real-path verification** and **Completion gate** — implementation
+  is finished and the final evidence report is being assembled.
 
-## Declare the observability level
+Never create a second traced wrapper path to handle errors. Adapt the binding
+recipe's single outcome adapter to the existing application semantics.
 
-- **Wrapper baseline:** faithful wrapper root, exact underlying CLI session,
-  CLI child, restart continuity, and export lifecycle. This is useful but does
-  not show the inner agent’s LLM calls, tools, or subagents.
-- **Full wrapped-agent tracing:** real supported hook, JSONL, OTel, or native
-  instrumentation supplies inner LLM/tool/subagent evidence. Normalize clocks,
-  keep all children inside the wrapper root, and link true subagents as
-  separate agent traces when supported.
+## Completion rule
 
-Never synthesize inner spans or describe an aggregate subprocess span as full
-agent tracing.
-
-Stock `claude -p --output-format json` exposes the final result and CLI session
-metadata, not trustworthy inner LLM/tool timing. Treat that mode as wrapper
-baseline. Claim full coverage only when a documented hook, stream JSON, OTel,
-or native source is actually enabled and its records are reconciled.
-
-## Non-negotiable implementation gates
-
-1. Require an explicit project. Missing project configuration must fail before
-   serving traffic; prove the real launcher rejects an explicitly empty value
-   even when dotenv exists. Do not guess a project or silently install a no-op
-   tracer.
-2. Forward key, organization, project, and endpoint overrides into the real
-   wrapper runtime and, when inner tracing is claimed, into the subprocess.
-3. Use application-owned sanitized semantic prompt/reply fields. Truncation is
-   not redaction; omit-only metadata makes the wrapper behavior-blind and must
-   be reported as incomplete.
-4. End the observed wrapper root, then run an awaited, bounded flush in the
-   outer route's `finally` path before returning or rethrowing across the
-   tested restart checkpoint. Production may stay fail-open on telemetry;
-   missing export blocks the tracing claim.
-5. If raw subprocess exceptions or stderr are not approved trace data, set a
-   normalized semantic failure output/status inside the root and rethrow the
-   original only after the observed scope ends.
-6. If inner records stream before task completion, emit/update the finalized
-   root last so online evaluation sees complete children and final IO.
-
-## Completion gate
-
-Run real CLI turns across at least two sessions and a wrapper restart. Include
-a resumed turn and a nonzero/timeout/error path when safe. Stored Judgment
-evidence must prove:
-
-- one finalized wrapper root per expected task and no readback/health roots;
-- root prompt/reply matches the actual API response semantically;
-- exact underlying CLI session IDs group resumed turns across restart;
-- CLI children have honest timing/outcomes and fit inside root windows;
-- explicit routing reaches the intended existing project;
-- raw payloads exclude secrets, auth, unapproved files/history/schemas; and
-- claimed inner-agent coverage is backed by actual inner LLM/tool/subagent
-  evidence, otherwise the result is labeled wrapper baseline.
-
-Report the focused reference's table with `pass`, `fail`, `blocked`, or
-`not-applicable` and one evidence class: static, synthetic, real application,
-or stored Judgment. Missing evidence is `blocked`; a fake CLI does not prove
-real inner-agent tracing.
+Do not claim inner coverage from an aggregate subprocess span or fake CLI.
+Reconcile real wrapper turns and exact underlying CLI session IDs with settled
+raw Judgment evidence across restart. Report every recipe gate as `pass`,
+`fail`, `blocked`, or genuinely `not-applicable`, with evidence class `static`,
+`synthetic`, `real application`, or `stored Judgment`. Missing evidence is
+`blocked`.

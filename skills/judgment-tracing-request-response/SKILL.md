@@ -38,9 +38,11 @@ question; do not load the long general tracing guide by default.
    blocked.
 4. Choose an approved sanitizer, a conservative credential/auth baseline that
    requires privacy review, or strict omission (which blocks useful root
-   evidence). Sanitize before bounding. Raw canaries must cover API/provider
-   keys, authorization, cookies/sessions, secret assignments, URL credentials,
-   and private keys across input, output, error, and beyond-bound positions.
+   evidence). Sanitize before bounding. Raw canaries must cover non-real
+   OpenAI-style `sk-`, GitHub-style `ghp_` and `github_pat_`, other installed
+   API/provider keys, authorization, cookies/sessions, secret assignments, URL
+   credentials, and private keys across input, output, error, and beyond-bound
+   positions.
 5. End the observed business root before running an awaited, bounded exporter
    flush in the outer request layer's `finally` path. Success and request/model
    error paths must both attempt export after the root has ended.

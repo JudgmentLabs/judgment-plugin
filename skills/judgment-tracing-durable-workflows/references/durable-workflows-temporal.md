@@ -1,492 +1,113 @@
-# Judgment Tracing for Temporal and Durable Workflows
+# Temporal and Durable Workflow Deep Reference
 
-Use this guide when an application starts work that can outlive the request
-that submitted it, especially when it uses Temporal workflows, activities,
-retries, timers, human approval, signals, worker restarts, or replay.
+This file is optional. `durable-workflow-binding-recipe.md` is the only
+implementation recipe. Read only the section named by `../SKILL.md` after its
+condition is detected. These sections provide diagnostics and proof criteria,
+not a second copyable adapter.
 
-The official Judgment Temporal integration explains how to route Temporal's
-OpenTelemetry spans through Judgment. That is transport setup, not a complete
-trace design. Before installing an interceptor, decide which application work
-should be a trace, where durable boundaries occur, and which stable ID should
-group the resulting traces into a session.
+## Contents
 
-## Required model
-
-A durable job normally becomes several traces in one Judgment session:
-
-- A short submission or approval request is its own request trace with
-  faithful input and output.
-- Durable work between two checkpoints is a work-segment trace.
-- A human-approval wait, long timer, queue handoff with no active owner, or
-  other durable suspend ends the current segment.
-- Work after resume starts a fresh trace.
-- Every trace belonging to the same job uses the stable workflow or job ID as
-  `judgment.session_id`.
-- Activity, LLM, and tool spans sit under the segment or activity root that was
-  actually active while they ran.
-
-For a workflow that plans, executes steps, waits for approval, then writes a
-report, a useful target is:
-
-```text
-session_id = workflow_id
-
-trace: job.submit
-  input: bounded goal + requester
-  output: workflow_id + accepted status
-
-trace: workflow.pre_approval
-  input: workflow_id + bounded goal
-  children: plan, execute-step, LLM, and tool work
-  output: bounded plan/step-result semantics + awaiting_approval
-
-trace: job.approve
-  input: workflow_id + approver/decision
-  output: acknowledged status
-
-trace: workflow.post_approval
-  input: workflow_id + approval outcome
-  children: synthesis, report-write, LLM, and tool work
-  output: completed status + bounded synthesis/result semantics + artifact identity
-```
-
-Do not create this shape by leaving a span object open across an indefinite
-wait or by pretending an HTTP request lasted for the entire workflow. Each
-root must have a real owner, a non-zero duration, faithful final input/output,
-and a time window that contains its children.
-
-## Why automatic distributed tracing is not enough
-
-Temporal's `TracingInterceptor` is useful for propagating context and exposing
-workflow/activity mechanics. Used as the only design decision, however, it can
-produce one of two unhelpful shapes:
-
-1. A millisecond submission-request root that is finalized before worker spans
-   arrive. Later workflow and activity work is attached outside the root's
-   time window, so Judgment evaluates an incomplete trace.
-2. A waterfall dominated by `StartWorkflow`, `RunWorkflow`, `RunActivity`,
-   polling, and transport shells instead of the agent's planning, tools, model
-   calls, approval, and final result.
-
-Never infer correctness merely because spans share a trace ID. Inspect the raw
-root duration and verify that every child begins and ends inside the root. Also
-inspect the root itself: setting `session_id` inside an activity child does not
-retroactively place it on the already-created request root.
-
-Use the interceptor only when its generated spans support the chosen
-application model. It may be appropriate as supplemental infrastructure detail
-or inside one bounded segment. Do not propagate the submit request's ambient
-trace context into hours or days of durable work.
-
-## Choose boundaries from the workflow before editing code
-
-Read the producer routes, workflow definition, activity definitions, worker
-startup, retry policy, and signal/approval paths. Write down:
-
-1. The stable workflow/job ID.
-2. Every short write request that deserves its own trace.
-3. Every durable suspend or checkpoint.
-4. The business work performed before and after each checkpoint.
-5. Which process owns each segment and can reliably finalize and flush it.
-6. What retries, worker kills, or replays can occur.
-7. Which read-only polling routes should be excluded or sampled.
-
-If a root cannot have one reliable owner across multiple activities, do not
-fake a cross-process parent. Use the safe fallback below and report it as a
-deliberate alternative.
+- [Safe fallback](#safe-fallback-one-activity-or-execution-phase-per-trace)
+- [Producer routes and polling](#producer-routes-and-polling)
+- [Replay and retry safety](#replay-and-retry-safety)
+- [Mandatory real-path verification](#mandatory-real-path-verification)
+- [Completion gate](#completion-gate)
 
 ## Safe fallback: one activity or execution phase per trace
 
-When a single segment root cannot be continued and finalized reliably across
-Temporal tasks, use one root per meaningful activity or restart-safe execution
-phase. Name roots by business purpose, not framework mechanics, and group all
-of them with `session_id = workflow_id`.
+Use this section only when a pre/post-suspend segment has no single process that
+can reliably own, finalize, and export it, an interceptor parent leaks into
+worker activity, or a Python activity needs an outcome/flush design.
 
-These must be fresh application traces, not ordinary children of propagated
-`StartWorkflow` / `RunActivity` context. Prefer not to propagate the short
-submission request's trace context into durable workers at all. If the
-installed Judgeval version supports the documented `Tracer.observe(...,
-fork=True)` behavior, use it defensively at the application activity boundary:
-when an interceptor-created parent is active, the business activity runs under
-a fresh linked-trace root instead of extending the submit trace. Inspect the
-installed SDK signature and stored trace IDs rather than assuming this option
-exists or behaves identically in every version.
+The safe fallback is one fresh trace per meaningful activity or restart-safe
+execution phase, with every root grouped by the exact workflow ID. It is less
+compact than segment traces but more truthful than an HTTP submission root with
+late children or a span kept open across an indefinite wait.
 
-For example:
+Diagnose the boundary from raw data:
 
-```text
-session workflow-123
-  trace workflow.plan
-    children: LLM calls
-  trace workflow.execute_step
-    children: fetch_url, extract_table, LLM calls
-  trace workflow.execute_step
-    children: summarize_chunk, LLM calls
-  trace workflow.synthesize
-    children: LLM call, write_report
-```
+- The business activity must be the root of a fresh trace, not a child of
+  `POST /jobs`, `StartWorkflow`, or `RunActivity`.
+- Confirm the installed Judgeval version's fresh/fork semantics. A decorator or
+  `fork` setting is not proof; record raw trace, span, and parent IDs.
+- Set `judgment.session_id` only after the intended business root is active.
+- Keep model/tool work inside that root and retain bounded semantic activity IO.
+- A plan count, tool count, report path, or `completed` status cannot replace a
+  safe plan, step-result, or synthesis summary.
 
-This is less compact than a pre-approval and post-approval pair, but it is
-honest and useful when every root has faithful input/output and the session
-reconstructs the job. It is preferable to a single malformed mega-trace or a
-short request root with children outside its window.
+Use one outcome boundary. Disable automatic root IO, guard trace-only writes,
+record a normalized semantic error inside the root, and keep the original
+exception only in memory. The observed business root ends before the outer
+activity preserves the application's existing return/retry/rethrow behavior.
+That same outer activity awaits bounded export in `finally` on success and
+failure. Do not decorate the activity directly when that would make post-root
+flush impossible, and do not add a second direct-decorator path.
 
-For a Python Temporal activity, initialize Judgment in the activity worker
-before the worker starts. Then create the application root at the activity
-entrypoint, and set session context only after that root is active:
-
-```python
-from judgeval import Tracer
-from temporalio import activity
-
-def report_telemetry_failure(label: str, error: Exception) -> None:
-    try:
-        activity.logger.warning("Judgment telemetry failed: %s", label)
-    except Exception:
-        pass
-
-def best_effort_trace_write(label: str, write) -> None:
-    try:
-        write()  # Include trace-only sanitization/classification here.
-    except Exception as error:
-        report_telemetry_failure(label, error)
-
-def set_step_input(info, request) -> None:
-    Tracer.set_session_id(info.workflow_id)
-    Tracer.set_input({
-        "workflow_id": info.workflow_id,
-        "step_index": request.step.index,
-        "step_title": bounded_text(request.step.title),
-        "step_instruction": safe_step_instruction(request.step),
-        "attempt": info.attempt,
-    })
-
-def set_step_output(result) -> None:
-    Tracer.set_output({
-        "step_index": result.index,
-        "status": "completed",
-        "result_summary": safe_step_result_summary(result),
-        "tool_outcomes": safe_tool_outcomes(result.tool_calls),
-    })
-
-@activity.defn
-@Tracer.observe(
-    span_type="agent",
-    span_name="workflow.execute_step",
-    record_input=False,
-    record_output=False,
-    fork=True,
-)
-async def execute_step(request):
-    info = activity.info()
-    best_effort_trace_write(
-        "execute-step input", lambda: set_step_input(info, request)
-    )
-
-    result = await run_step(request)
-
-    best_effort_trace_write(
-        "execute-step output", lambda: set_step_output(result)
-    )
-    return result
-```
-
-`bounded_text` is a placeholder for the application's real redaction and size
-policy. Do not record complete workflow state, prior reports, HTML, files,
-conversation history, or credentials merely because an activity request is a
-dataclass that automatic capture can serialize.
-
-`safe_step_instruction`, `safe_step_result_summary`, and `safe_tool_outcomes`
-are application policy adapters, not permission to return only metadata. A
-root output such as `{"step_index": 3, "status": "completed",
-"tool_count": 4}` is not faithful step output because it never says what the
-step produced. Keep the smallest sanitized business result that would let a
-reviewer distinguish a correct step from a wrong one.
-
-After live traffic, prove that the `workflow.execute_step` span is the
-parentless root of its own trace. If it still shares the `POST /jobs` trace ID
-or sits below `RunActivity`, the fallback was not implemented: remove the
-unwanted inherited context or use the installed SDK's documented fresh/linked
-trace primitive. Merely adding `@Tracer.observe` with its normal `fork=False`
-default does not break an active Temporal interceptor parent chain.
-
-If a worker can be killed immediately after activity completion, use a worker
-or activity lifecycle point that runs after the root ends to make a bounded,
-observable `Tracer.force_flush()` attempt. A flush executed while the root is
-still open cannot export that root's final state.
-
-When the Temporal activity function is itself the observed root, code inside
-that function cannot flush the root after it ends. Use two layers: an inner
-observed business function and an outer Temporal activity that waits for the
-inner root to finish, then flushes before acknowledging activity completion.
-For Python Judgeval 1.2.x, a representative shape is:
-
-```python
-import asyncio
-from dataclasses import dataclass
-from typing import cast
-
-from opentelemetry.trace import Status, StatusCode
-from temporalio import activity
-
-@dataclass
-class PlanOutcome:
-    # The original exception remains process memory only because automatic
-    # output capture is disabled on traced_plan.
-    result: PlanResult | None = None
-    error: Exception | None = None
-
-def set_plan_input(request: PlanRequest) -> None:
-    Tracer.set_session_id(request.workflow_id)
-    Tracer.set_input({
-        "workflow_id": request.workflow_id,
-        "goal": bounded_text(request.goal),
-        "attempt": activity.info().attempt,
-    })
-
-def set_plan_error(exc: Exception) -> None:
-    # Classification is trace-only and stays inside the fail-open guard.
-    code = classify_plan_error(exc)
-    Tracer.set_output({"status": "failed", "error_code": code})
-    Tracer.get_current_span().set_status(Status(StatusCode.ERROR, code))
-
-def set_plan_output(result: PlanResult) -> None:
-    Tracer.set_output({
-        "status": "completed",
-        "step_count": len(result.steps),
-        "plan": safe_plan_items(result.steps),
-    })
-
-@Tracer.observe(
-    span_type="agent",
-    span_name="workflow.plan",
-    record_input=False,
-    record_output=False,
-    fork=True,
-)
-async def traced_plan(request: PlanRequest) -> PlanOutcome:
-    best_effort_trace_write(
-        "plan input", lambda: set_plan_input(request)
-    )
-    try:
-        result = await perform_plan(request)
-    except Exception as exc:
-        best_effort_trace_write(
-            "plan error", lambda: set_plan_error(exc)
-        )
-        return PlanOutcome(error=exc)
-
-    best_effort_trace_write(
-        "plan output", lambda: set_plan_output(result)
-    )
-    return PlanOutcome(result=result)
-
-@activity.defn(name="plan")
-async def plan_activity(request: PlanRequest) -> PlanResult:
-    try:
-        # The Judgment root ends when traced_plan returns or raises.
-        outcome = await traced_plan(request)
-        if outcome.error is not None:
-            # Preserve Temporal's original retry/failure behavior, but only
-            # after the observed root has ended.
-            raise outcome.error
-        return cast(PlanResult, outcome.result)
-    finally:
-        try:
-            flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
-            if not flushed:
-                report_telemetry_failure(
-                    "plan flush", TimeoutError("flush timed out")
-                )
-                # Production policy may preserve the durable result/error, but
-                # tracing verification must mark this attempt not trace-safe.
-        except Exception as error:
-            # Export failure blocks the experiment claim, but must not replace
-            # the activity result or Temporal's original retryable exception.
-            report_telemetry_failure("plan flush", error)
-```
-
-Apply the same completion barrier to successful and failed activity roots that
-must survive an immediate worker kill. Do not put `force_flush()` inside
-`traced_plan`, launch it as fire-and-forget work, or wait until worker
-shutdown. Match the installed SDK signature; current Python Judgeval 1.2.x
-returns a boolean from `force_flush(timeout_millis)`.
-
-Use these best-effort helpers for setters, classifiers, reporters, finalization,
-and flush. They must not alter the durable outcome or retry.
-
-If raw activity exceptions are not approved trace data, do not rethrow them
-from inside the observed business function. Record a normalized semantic
-failure output and safe error status, return an outcome object carrying the
-original exception only in memory, then rethrow from the outer activity after
-the observed root has ended. Its `finally` block must still perform the bounded
-flush. This keeps the failed retry attempt visible without copying raw provider
-or tool error text into the trace.
-
-`safe_plan_items` must retain bounded plan meaning, such as safe item titles
-and instructions, not only their count. Apply the same rule to synthesis: a
-report path and word count support the output but do not replace a bounded
-summary of the report/result. The following outputs are explicitly
-insufficient when the richer result exists:
-
-```json
-{"status":"completed","step_count":3}
-{"step_index":3,"status":"completed","tool_count":4}
-{"status":"completed","report_path":"report.md","word_count":99}
-```
+Telemetry setters, sanitizers, classifiers, reporters, root end, and flush
+reporting must remain fail-open. They cannot invent durable failure state,
+suppress retries, repeat side effects, or replace the real exception. Flush
+failure blocks tracing verification without changing the durable outcome.
 
 ## Producer routes and polling
 
-Trace short producer writes separately from durable execution:
+Use this section when real submit/approval routes export zero roots, request
+tasks do not see the initialized tracer, or HTTP/polling noise dominates.
 
-- `POST /jobs`: bounded request input; workflow ID and accepted status output.
-- `POST /jobs/{id}/approve`: workflow ID, bounded decision metadata, and
-  acknowledgement output; use the workflow ID as the session ID.
-- Cancellation or retry-control writes: their own traces when operationally
-  meaningful.
+Trace short producer writes separately:
 
-For Python FastAPI/Starlette producers, do not assume that initializing
-Judgeval in the lifespan coroutine activates the tracer in request tasks.
-Judgeval 1.2.x stores the active tracer in a context variable. A lifespan task
-and a request task can therefore use different active-tracer contexts even
-inside one process.
+- submission: bounded goal/requester input and workflow ID/accepted output;
+- approval/signal: workflow ID plus bounded decision and acknowledgement; and
+- cancellation/retry control: a separate trace only when operationally useful.
 
-Prefer initializing and retaining the tracer in the module, app factory, or
-server entrypoint after environment loading but before the server creates its
-lifespan and request tasks. Use lifespan for shutdown rather than as the first
-activation site. A representative shape is:
+Every related producer root uses the workflow ID as its session. Status, health,
+and high-frequency read routes are excluded or sampled outside the agent signal.
 
-```python
-settings = get_settings()  # load dotenv/config before Tracer.init reads it
-JUDGMENT_TRACER = Tracer.init(
-    project_name=settings.judgment_project_name,
-)
+For FastAPI/Starlette with Judgeval versions that store the active tracer in a
+context variable, lifespan initialization may not activate request-task
+contexts. Initialize after environment loading but before the server creates
+request tasks, or retain the tracer and activate it at each request/consumer
+entrypoint using the installed API. Prove activation with one real submission
+and approval in Judgment; worker roots do not prove producer activation.
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    yield
-    Tracer.shutdown()
-
-app = FastAPI(lifespan=lifespan)
-```
-
-When framework constraints require lifespan initialization, keep the returned
-tracer and call its documented `set_active()` at the beginning of each request
-or consumer task before any application root is active. Do not switch providers
-in the middle of a trace. Match this to the installed SDK and middleware
-ordering.
-
-The proof is not a startup log: execute one real submission and one real
-approval, then find both stored roots by the exact workflow ID. Worker activity
-traces do not prove that the producer request context is active.
-
-Run the real producer and every exporting worker separately with the project
-explicitly empty, a 30-second bound, and cleanup in `finally`. Each must fail
-with the expected configuration error before readiness; `unset` is invalid
-when dotenv can refill it.
-
-Do not use a framework-wide HTTP instrumentor without filtering. Health checks
-and high-frequency `GET /status` polling can create dozens of roots for every
-few meaningful workflow traces. Exclude them, sample them separately, or keep
-them out of the agent-tracing project.
-
-## Sessions are the durable continuity mechanism
-
-A Judgment session groups multiple completed traces. It is not a substitute
-for a trace, and it should not duplicate the same boundary without adding
-continuity.
-
-For a durable workflow:
-
-- Use the exact workflow/job ID already persisted by the application.
-- Put it on the root of every request, segment, or activity trace that belongs
-  to the job.
-- Verify the root attribute in stored data; seeing the ID on a child is not
-  sufficient.
-- Confirm pre-restart and post-restart traces appear in the same Sessions view.
-- Keep distinct workflows in distinct sessions.
-
-Do not generate a new session ID in each worker process, use a process-local
-global, or use the HTTP request ID as the durable session identifier.
+Forward key, organization, explicit project, and endpoint overrides into the
+producer and every exporting worker. Test each real launcher with the project
+explicitly empty under a 30-second bound and guaranteed cleanup. It must fail
+before readiness with the expected error even when dotenv exists. `unset`, a
+timeout, continued serving, or unrelated failure does not pass.
 
 ## Replay and retry safety
 
-Temporal workflow code is replayed and must remain deterministic. Avoid
-network export, random IDs, wall-clock reads, tracer initialization, or direct
-span lifecycle work inside deterministic workflow code unless the installed
-Temporal integration explicitly guarantees replay-safe behavior.
+Use this section when attempts are missing, duplicated, or malformed.
 
-Prefer instrumentation at:
+Temporal workflow code is deterministic and replayed. Keep network export,
+random identifiers, wall-clock reads, tracer initialization, and direct span
+lifecycle work out of workflow code unless the installed integration explicitly
+guarantees replay safety. Prefer producer handlers, activity entrypoints,
+activity LLM/tool calls, worker lifecycle hooks, and a proven persisted carrier.
 
-- producer request handlers;
-- activity entrypoints;
-- LLM and tool calls inside activities;
-- worker startup/shutdown and supported interceptors; and
-- explicit, persisted carriers or workflow fields when the architecture has a
-  proven cross-process segment design.
-
-Record Temporal's activity attempt number and outcome. A failed attempt and a
-successful retry may both be useful when clearly labeled, but replay or
-double-instrumentation must not create indistinguishable duplicates. A killed
-attempt must not leave a zero-duration root that looks like a completed trace.
-
-## Payload and tool rules
-
-Durable workflows often move large state objects between activities. Automatic
-capture can copy the same goal, prior results, HTML, reports, tool schemas, or
-credentials into every trace.
-
-- Disable automatic root/tool input and output capture when payloads are not
-  known to be small and safe.
-- Redact secrets before truncating; truncation alone still stores a secret.
-- Use stable IDs, counts, statuses, safe titles, and byte lengths as supporting
-  metadata alongside a bounded semantic trigger/result. They are not faithful
-  root IO by themselves when the activity produced a plan, step result, or
-  synthesis.
-- Keep business tool identity and useful semantic input/output-or-error.
-- Do not duplicate framework-generated LLM or tool spans with a second manual
-  span unless the framework span cannot carry the required evidence.
-
-Choose an approved sanitizer, a conservative credential/auth baseline requiring
-privacy review, or strict omission (which blocks semantic evidence). Exercise
-non-real API/provider-key, authorization, cookie/session, secret-assignment,
-URL-credential, and private-key canaries before/beyond the bound and through a
-real activity result/error and final synthesis. Search every raw attribute in
-the workflow session; repeated activities must not copy full workflow state.
+Record the activity attempt and normalized outcome. A failed attempt and later
+success can both be useful, but workflow replay and double instrumentation must
+not create indistinguishable duplicates. A killed attempt must not look like a
+successful zero-duration trace. Reconcile stored roots to the workflow's own
+attempt/event record rather than inferring retries from span names.
 
 ## Mandatory real-path verification
 
-Unit tests and scratch spans do not prove a durable workflow integration.
-Exercise a real production-style workflow and inspect the stored result by the
-exact workflow ID.
+Use a production-style workflow, not a tool-only smoke:
 
-At minimum:
+1. Start a job and record the exact workflow ID.
+2. Complete pre-suspend work.
+3. Restart/kill an activity worker during an attempt when retry exists.
+4. Send the real approval/signal or trigger the real timer.
+5. Restart the workflow worker while suspended when supported.
+6. Complete post-suspend work.
+7. Wait for ingestion, query the exact workflow session, and inspect raw spans.
 
-1. Start one job and record its workflow ID.
-2. Let pre-approval work complete.
-3. Kill or restart an activity worker during one attempt when the application
-   supports retries.
-4. Pause for and then send the real approval/signal.
-5. Restart the workflow worker while the job is suspended when supported.
-6. Let post-approval work finish.
-7. Search Judgment by the exact workflow ID and wait for ingestion to settle.
-8. Inspect every root and representative child from raw stored span data.
-
-The result passes only when:
-
-- no trace has children outside its root time window;
-- every meaningful root has faithful bounded input and final output;
-- every root carries the exact workflow ID as `session_id`;
-- the session contains pre- and post-suspend work across restarts;
-- retries are visible without indistinguishable duplicates;
-- LLM and business-tool spans remain useful;
-- submission and approval writes are visible;
-- status polling and Temporal infrastructure do not dominate; and
-- no large state objects or secrets appear in raw attributes.
-
-If the runtime cannot execute this scenario, report live verification as
-blocked. Do not replace it with a tool-only smoke trace or a claim that the
-interceptor should connect everything.
+Reconcile recorded application events with every meaningful root. Require final
+semantic IO, exact session identity, complete child windows, fresh parentage,
+visible nonduplicated attempts, useful LLM/tools, producer writes, acceptable
+business-to-noise density, and raw payload safety. Missing runtime support is
+`blocked`; it is not replaced by a scratch span or interceptor claim.
 
 ## Completion gate
 
@@ -496,17 +117,17 @@ evidence is `blocked`; stubs and scratch spans are synthetic.
 | Gate | Result | Evidence class | Exact evidence |
 | --- | --- | --- | --- |
 | Workflow model | <result> | static | Files naming the stable workflow ID, durable checkpoints, and chosen trace units |
-| Explicit routing negative | <result> | real application | Exact explicit-empty real-launcher command, nonzero exit, and expected error |
-| Request separation | <result> | stored Judgment | Submit/approve trace IDs distinct from durable work trace IDs |
+| Explicit routing negative | <result> | real application | Exact explicit-empty launcher command for each exporter, nonzero exit, and expected error |
+| Request separation | <result> | stored Judgment | Submit/approve trace IDs distinct from durable-work trace IDs |
 | Producer activation | <result> | stored Judgment | Real submit and approval trace IDs in the intended project; worker roots alone do not pass |
-| Fresh activity roots | <result> | stored Judgment | Raw trace/span/parent IDs proving phase roots are distinct from submit and not interceptor children |
+| Fresh activity roots | <result> | stored Judgment | Raw trace/span/parent IDs proving roots are distinct from submit and not interceptor children |
 | Root lifetime | <result> | stored Judgment | Raw start/end arithmetic for every root and child |
 | Session placement | <result> | stored Judgment | Exact workflow ID on every meaningful root |
-| Suspend boundary | <result> | stored Judgment | Pre- and post-suspend trace IDs and approval/timer/signal event |
-| Worker coverage | <result> | stored Judgment | Producer and each exporting worker's expected trace IDs |
-| Retry/replay | <result> | stored Judgment | Recorded workflow attempts reconciled to labeled roots without duplicates |
+| Suspend boundary | <result> | stored Judgment | Pre/post-suspend trace IDs and approval/timer/signal event |
+| Worker coverage | <result> | stored Judgment | Producer and every exporting worker's expected trace IDs |
+| Retry/replay | <result> | stored Judgment | Recorded attempts reconciled to labeled roots without duplicates |
 | Signal density | <result> | stored Judgment | Business-root count versus Temporal/HTTP/poll-root count |
-| Payload safety and usefulness | <result> | stored Judgment | Named mode, benign/canary raw search, bounds, and inspected attribute set |
+| Payload safety and usefulness | <result> | stored Judgment | Named mode, benign/canary raw search, bounds, parseable structured IO, and inspected attribute set |
 | Export lifecycle | <result> | stored Judgment | Last completed pre-kill and first post-restart trace IDs after bounded flush |
-| Real workflow behavior | <result> | real application | Recorded events/results covering submit, suspend/approval, retry, restart, and completion |
-| Stored scenario proof | <result> | stored Judgment | Project, workflow session, trace IDs, and reconciliation to those recorded events/results |
+| Real workflow behavior | <result> | real application | Events/results covering submit, suspend/approval, retry, restart, and completion |
+| Stored scenario proof | <result> | stored Judgment | Project, workflow session, trace IDs, and reconciliation to recorded events/results |
