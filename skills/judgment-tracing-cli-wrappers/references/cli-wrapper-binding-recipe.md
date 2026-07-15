@@ -208,36 +208,22 @@ lambda: Tracer.getOTELTracer().start_as_current_span(
 ```
 
 If the application intentionally continues an upstream distributed trace, enter
-the installed public `Tracer.continue_trace(carrier)` scope and instead start
-the business root with that current context. Pin and executable-test the exact
-Judgeval/OpenTelemetry versions and prove raw IDs in both modes. Never let an
-ambient ASGI/HTTP span choose parentage implicitly; if the installed public API
-cannot express the intended policy, root parentage remains `blocked`.
+the installed public `Tracer.continue_trace(carrier)` scope instead. Never let
+an ambient ASGI/HTTP span choose parentage implicitly; if the installed public
+API cannot express the intended policy, root parentage is `blocked`.
 
-Apply `trace_only(...)` to input, output, attributes, session assignment,
-span-kind/status, finalization, and flush reporting. A direct `Tracer.set_*`
-call in business code is a static completion failure. The adapter wraps only
-telemetry thunks whose return values are unused; never put validation, CLI
-execution, persistence, response construction, or other business work inside
-it.
+Every telemetry write goes through `trace_only(...)` — a bare `Tracer.set_*` in
+business code is a static completion failure. Never put validation, CLI
+execution, persistence, or response construction inside the guard. Trace-scope
+start/enter/exit is telemetry too: with `optional_trace_scope`, a start/enter
+failure runs the business path once without a span, an exit failure preserves
+the saved result, and the business path is never retried for tracing. When a
+child scope yields `None`, skip every child-only write — a global/current-span
+setter must never fall through to the still-active parent.
 
-Trace-scope start/enter/exit is telemetry too. Use an equivalent of
-`optional_trace_scope` around the one business execution: a start or enter
-failure runs that path once without a span, and an exit failure preserves the
-already-saved result/error. Never retry the business path to recover from
-tracing. Keep business exceptions in memory, safely classify/mark while the
-scope is current, finalize it without automatic raw exception capture, then
-rethrow outside it.
-When a child scope yields `None`, skip every child-only setter/status write;
-never let a global/current-span setter fall through to the still-active parent.
-The child start/enter fault tests must prove the CLI runs once and the parent
-root's input/output/session are not overwritten by attempted child evidence.
-
-Span names do not imply span kinds. Immediately after the wrapper root becomes
-current, use guarded public SDK setters to record the canonical `agent` kind and
-the honest wrapper-only coverage label. Immediately after `agent_cli.invoke`
-becomes current, guardedly record the canonical `tool` kind. Keep these writes
-inside their owning scopes so a missing child can never relabel the root:
+Span names do not imply span kinds. While each span is current, guardedly set
+the canonical kind (`agent` root, `tool` CLI child) and the honest coverage
+label:
 
 ```python
 if root_span is not None:
@@ -254,15 +240,9 @@ if cli_span is not None:
     trace_only("cli-child:span-kind", lambda: Tracer.set_span_kind("tool"))
 ```
 
-If either optional scope yields `None`, skip every setter for that scope. A
-global/current-span setter must never fall through to an upstream span or from
-a missing CLI child to the still-current wrapper root.
-
-`instrumentation.coverage` is an app-defined disclosure, not a claim that
-Judgment automatically inferred coverage. Use `wrapper_only` when the only
-inner evidence is the aggregate subprocess call. If real linked or nested
-records are later added, replace the label with the precisely documented level
-rather than leaving a false wrapper-only or full-coverage claim.
+`instrumentation.coverage=wrapper_only` is an app-defined disclosure for when
+the only inner evidence is the aggregate subprocess call; replace it with the
+documented level if real linked/nested records are added later.
 
 Use this ordering for the single root path:
 
@@ -293,37 +273,22 @@ Use this ordering for the single root path:
 | Other pre/post-CLI application exception | `ERROR: unexpected_application_error`; never leave an empty success root | absent before CLI; preserve truthful child outcome after CLI |
 | Trace scope start/enter/exit or setter/sanitizer/status/finalizer/flush failure | business behavior unchanged and business path runs once; affected evidence `blocked` | business behavior unchanged |
 
-Then enforce these rules:
+Rules for the table:
 
-1. Guard trace setters, root and child sanitizers/classifiers independently,
-   reporters, finalization, and flush reporting. Telemetry failure must not
-   alter application behavior.
-2. Run existing session validation, CLI invocation, parsing, persistence, and
-   response construction once.
-3. Record success only after mapping/persistence and the actual reply succeed.
-4. For each table row, use its stable semantic category and OpenTelemetry
-   `StatusCode.ERROR` on exactly the owning spans. Set status while each span
-   is current; a custom `error` attribute alone still looks successful.
-5. Keep original exceptions only in memory; never trace raw stderr, command,
-   environment, exception text, or JSONL. End the observed root, then rethrow or
-   preserve the existing handler behavior outside it.
-6. After root end, await a bounded flush in the outer route's `finally` before
-   returning/rethrowing at the tested restart checkpoint. Failed export blocks
-   the tracing claim but cannot replace a valid reply or original exception.
-
-Do not create a separate copyable traced error path. Do not turn nonzero exit
-into traced success because an exit-code field exists. Tracing outcome and
-transport outcome are separate: if the existing application persists a
-nonzero result and returns HTTP 200, preserve that behavior while marking the
-CLI child and wrapper root as errors with the same safe code. Do not throw,
-retry, skip persistence, or change the response merely to make tracing easier.
-
-Call `mark_span_error` while `agent_cli.invoke` is current for CLI-owned
-failures, then on the wrapper root. For validation, mapping, persistence, or
-response failures outside CLI invocation, mark only the root. Catching a
-trace-setter failure outside `trace_only` can trigger SDK automatic exception
-capture and leak its message/stack; that is a telemetry fail-open and payload
-safety failure.
+1. Record success only after mapping/persistence and the actual reply succeed;
+   a business path that runs once stays run-once under every telemetry fault.
+2. Each row gets its stable semantic category plus OpenTelemetry
+   `StatusCode.ERROR` on exactly the owning spans, set while each span is
+   current — a custom `error` attribute alone still looks successful. Call
+   `mark_span_error` on `agent_cli.invoke` for CLI-owned failures, then on the
+   root; for non-CLI failures mark only the root.
+3. Original exceptions stay in memory; never trace raw stderr, command,
+   environment, exception text, or JSONL. End the root, then rethrow/preserve
+   the existing handler behavior outside it, and await the bounded flush in the
+   outer route's `finally`.
+4. Tracing outcome and transport outcome are separate: if the app persists a
+   nonzero result and returns HTTP 200, preserve that while marking both spans
+   as errors. Never throw, retry, or skip persistence to make tracing easier.
 
 This tempting ordering is forbidden because the sanitizer/classifier can raise
 before the guard and replace a real CLI result or application exception:
@@ -378,20 +343,17 @@ object containing
 invalid fragment. Prove settled `judgment.input`/`judgment.output` remain
 parseable and within the same 1,500-byte bound.
 
-Exercise a benign semantic marker plus non-real OpenAI-style `sk-`, GitHub-style
-`ghp_`/`github_pat_`, provider/API keys, prefixed assignments such as
-`JUDGMENT_API_KEY=` and `AWS_SECRET_ACCESS_KEY=`, cookies/sessions,
-URL credentials, private keys, loose `Bearer ...` / `Basic ...` values, and
-camelCase assignments such as `httpAuthorization=Basic ...` before/beyond the
-bound and in reply/error paths. Authorization redaction must anchor on the
-header name and remove every scheme, including `Authorization: ApiKey ...`,
-`Authorization: Digest ...`, and `Proxy-Authorization: Custom ...`; matching
-only header-form Bearer/Basic fails because standalone values leak too. Do not
-run one greedy header regex over serialized JSON. Redact structured keys before
-serialization. Remove multiline private-key blocks and standalone credential
-tokens before any greedy line/header rule. A key/value matcher must consume a
-`Basic` or `Bearer` scheme and its token atomically so the token is not left
-behind. A conservative Python baseline may include:
+Canary categories: provider tokens (`sk-`, `ghp_`, `github_pat_`, `xox*-`),
+prefixed assignments (`JUDGMENT_API_KEY=`, `AWS_SECRET_ACCESS_KEY=`),
+scheme-agnostic authorization headers (ApiKey/Digest/custom, not just
+Bearer/Basic), standalone `Bearer`/`Basic` values, camelCase assignments
+(`httpAuthorization=Basic ...`), cookies/sessions, URL credentials, and
+private-key blocks — in input, reply/error, and beyond-bound positions, with a
+benign marker that must survive. Ordering matters: redact structured keys
+before serialization; remove multiline private-key blocks and standalone tokens
+before any greedy line/header rule; a key/value matcher must consume a
+`Bearer`/`Basic` scheme and its token atomically. A conservative Python
+baseline:
 
 ```python
 import json
@@ -746,35 +708,22 @@ def set_safe_trace_error_output(
 ```
 
 Search settled raw roots, CLI/inner children, events, and resource attributes
-before and after restart. The benign marker survives; all canaries, raw
-commands/stderr/environments, unapproved files, histories, schemas, and
-transcripts are absent. Every stored input/output is valid JSON no larger than
-1,500 serialized bytes, and a clipped value still contains the parseable
-`_judgment_truncation` object. This conservative baseline is not general
-PII/DLP. The mandatory regex/helper matrix includes comma-bearing values such as
-`Authorization: Digest username=x, realm=y, nonce=z`, serialized
-`{"Authorization":"Digest username=x, realm=y"}`, and
-`PASSWORD="abc,def"`, structured and serialized `JUDGMENT_API_KEY` /
-`AWS_SECRET_ACCESS_KEY` / `CLIENT_SECRET` / camelCase access-token/password /
-cookie/session-token fields, `Set-Cookie`, `HTTP_AUTHORIZATION`, query-string
-assignments and a full URL such as
-`https://example.test/?api_key=CANARY&benign=SURVIVES`, fragment credentials
-such as `https://example.test/#access_token=CANARY&benign=SURVIVES`, standalone
-`sk-`/`ghp_`/`github_pat_`/`xox` tokens, URL userinfo including
-`amqps://user:CANARY@host` and password-only
-`redis://:CANARY@host:6379/0`, quoted shell headers such as
-`curl -H 'Authorization: Bearer CANARY' https://benign.example` and
-`curl -H 'Cookie: sid=CANARY; refresh=CANARY2' https://benign.example`,
-single-quoted Digest values containing double-quoted fields and double-quoted
-Cookie values containing single-quoted fields while the adjacent URL survives,
-private-key blocks, plus adjacent benign fields that must survive. A policy-approved
-business `session_id` is deliberately separate and is set through
-`Tracer.set_session_id`, not copied through this payload sanitizer.
+before and after restart: the benign marker survives; all canaries, raw
+commands/stderr/environments, files, histories, schemas, and transcripts are
+absent; every stored input/output is valid JSON <=1,500 serialized bytes, with
+a parseable `_judgment_truncation` object when clipped. This baseline is not
+general PII/DLP. Unit-test the ordered sanitizer on the categories above plus
+comma-bearing values (`Authorization: Digest username=x, realm=y`,
+`PASSWORD="abc,def"`), query/fragment credentials
+(`https://example.test/?api_key=CANARY&benign=SURVIVES`), URL userinfo under
+any scheme (`amqps://user:CANARY@host`, `redis://:CANARY@host:6379/0`), quoted
+shell headers with opposite nested quote kinds, and adjacent benign fields that
+must survive. The business `session_id` goes through `Tracer.set_session_id`,
+never this sanitizer.
 
-In addition to the individual cases, run these exact composed regressions. For
-each one, assert the named secret canaries are absent from the returned value
-and its serialized form, every `SURVIVES_*` marker remains, and repeated
-sanitization is idempotent:
+Run these exact composed regressions; assert the named canaries are absent from
+the returned value and its serialized form, every `SURVIVES_*` marker remains,
+and repeated sanitization is idempotent:
 
 | Fixture | Required result |
 | --- | --- |
@@ -819,72 +768,49 @@ Absent real inner records are `blocked` for stronger coverage, never
 
 ## 6. Prove the stored result
 
-Run two independent real wrapper sessions. Record wrapper IDs and returned CLI
+Run two independent real wrapper sessions: record wrapper IDs and returned CLI
 IDs, boundedly flush, restart the wrapper, then resume both using persisted CLI
-IDs. Exercise a tool-producing task when practical. Separately and safely
-exercise every supported subcase independently: invalid session; pre-CLI
-session lookup/create/state failure; nonzero; timeout; launch; empty output;
-malformed output; missing result; missing first-turn CLI session; returned-ID
-mapping persistence; turn persistence; response serialization when injectable;
-an unexpected pre/post-CLI application failure; wrapper-root scope start, enter,
-and exit; CLI-child scope start, enter, and exit; every
-input/output/session/attribute/span-kind/status setter; root sanitizer; root
-classifier; CLI-child sanitizer; CLI-child classifier; reporter; finalizer;
-synchronous flush throw; async flush rejection where applicable; flush timeout;
-and every payload-canary category, including the exact composed fixtures above.
-Record one injection and result per subcase; never pass a group because one
-member passed. An untriggered subcase is `blocked`. Also run the
-supported fake/degraded mode across a real process restart: roots must be valid
-and labeled fake, keep stable fake CLI sessions, and claim no inner coverage.
+IDs, with a tool-producing task when practical. Then exercise every supported
+subcase independently — one injection and one recorded result per subcase; an
+untriggered subcase is `blocked`, and a group never passes because one member
+passed:
 
-Every non-live unit/stub/fake/build/typecheck/import/smoke/dev/static-generation
-command must start in a fresh process with all export-capable
-Judgment/Judgeval/OTel credentials and exporter headers explicitly overridden
-empty before any app/SDK import, and `OTEL_SDK_DISABLED=true` where supported;
-or inject a proven in-memory/no-export tracer. If config requires a project
-string, use an obviously synthetic value only after proving the exporter is
-disabled. Merely unsetting can let dotenv refill values, clearing after import
-is too late, and `setdefault` is not isolation. Only named live probes may
-export; zero unexplained test roots is a completion condition.
+- request/CLI failures: invalid session; pre-CLI session state failure;
+  nonzero; timeout; launch; empty/malformed output; missing result; missing
+  first-turn CLI session; mapping/turn persistence; response serialization;
+  unexpected pre/post-CLI application failure;
+- telemetry faults: root and CLI-child scope start/enter/exit; every setter
+  actually used; root and child sanitizers and classifiers separately;
+  reporter; finalizer; sync flush throw; async flush rejection; flush timeout;
+- payload: every canary category including the composed fixtures above; and
+- the supported fake/degraded mode across a real process restart (valid roots
+  labeled fake, stable fake CLI sessions, no inner-coverage claim).
 
-Reconcile recorded requests/results with settled raw Judgment data and require:
+Keep all non-live commands export-free per the router's isolation principle;
+zero unexplained test roots is a completion condition.
+
+Reconcile recorded requests/results with settled raw Judgment data (poll after
+each flush until trees, span-ID sets, terminal IO, and timestamps are stable
+across a named interval; record a span-set hash) and require:
 
 - exactly one finalized nonzero-duration business root per real task, with
   truthful prompt/reply or normalized error and no read/health roots;
-- raw root `span_kind=agent`, aggregate CLI-child `span_kind=tool`, and
-  app-defined root `instrumentation.coverage=wrapper_only` for the wrapper
-  baseline; a span name containing `agent` or `tool` is not evidence;
-- exact returned/resumed CLI session IDs group the right turns across restart
-  while independent sessions remain separate;
-- normalized raw start/end arithmetic proves CLI/inner children show honest
-  mode, timing, resume, exit, and outcome inside the root. Derive timestamp
-  precision from raw stored values or documented platform resolution. For both
-  `start_margin = min(child_start) - root_start` and `end_margin = root_end -
-  max(child_end)`, a margin `>= 0` passes, `-precision < margin < 0` is
-  inconclusive and must be repeated, and `margin <= -precision` fails;
-- raw trace/span/parent IDs prove CLI/inner parentage; require an empty business
-  root parent only when no deliberate upstream distributed context exists;
-- exact project/endpoint routing, the valid-target positive control, and both
-  empty and same-type unknown-name/ID negatives pass without project creation;
-- every individual and composed payload canary is absent, every named benign
-  marker survives, and each raw structured input/output parses, is no larger
-  than 1,500 serialized UTF-8 bytes, and carries a parseable
-  `_judgment_truncation` marker when clipped;
-- last pre-restart and first post-restart roots survive bounded post-root flush;
-  and
-- every claimed inner LLM/tool/subagent has actual raw trace/span/link evidence.
+- raw `span_kind=agent` root, `span_kind=tool` CLI child, and
+  `instrumentation.coverage=wrapper_only` for the wrapper baseline — a span
+  name containing "agent"/"tool" is not evidence;
+- exact returned/resumed CLI session IDs group the right turns across restart;
+- CLI/inner children pass the router's margin arithmetic inside the root, with
+  honest mode/timing/resume/exit; empty business-root parent unless deliberate
+  upstream context exists;
+- routing positive/empty/unknown controls pass without project creation;
+- every canary absent, benign markers survive, each stored input/output parses
+  within 1,500 bytes;
+- last pre-restart and first post-restart roots survive the bounded flush; and
+- every claimed inner LLM/tool/subagent has actual raw trace/span/link
+  evidence.
 
-After each awaited bounded flush, poll raw data until the expected wrapper/CLI
-parent trees, span-ID set, terminal IO/status, session IDs, and timestamps remain
-unchanged across a named stability interval. Record raw-read timestamps and a
-span-set hash. Missing or changing data remains `blocked`; a single read is not
-proof that late inner records have settled.
-
-Fake mode, successful HTTP, builds, or scratch spans are synthetic only. Use
-`not-applicable` only when the architecture truly lacks a gate; missing auth,
-traffic, raw evidence, or export is `blocked`.
-
-The final report must have separate rows for static structure, each synthetic
-edge, real application behavior, and settled raw Judgment evidence. In
-particular, do not infer fail-open behavior from ordinary success, payload
-safety from unit regexes, or error ownership from only CLI-owned failures.
+Fake mode, successful HTTP, builds, or scratch spans are synthetic only. The
+final report keeps separate rows for static structure, each synthetic edge,
+real application behavior, and settled raw Judgment evidence; do not infer
+fail-open from ordinary success, payload safety from unit regexes, or error
+ownership from only CLI-owned failures.

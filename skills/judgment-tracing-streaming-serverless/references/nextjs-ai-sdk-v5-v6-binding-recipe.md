@@ -1,30 +1,19 @@
 # Next.js AI SDK 5/6 Streaming Binding Recipe
 
-Read this file completely only when the real path is a Next.js Node-runtime
-route returning a Vercel AI SDK 5/6 `streamText` text response. Confirm the
-major version in `package.json` and the lockfile. Do not apply it to AI SDK 7,
+Apply this only to a Next.js Node-runtime route returning a Vercel AI SDK 5/6
+`streamText` text response (confirm versions in the lockfile). Not for AI SDK 7,
 Edge runtime, `toUIMessageStreamResponse`, WebSockets, or indefinite streams.
-After dependencies are installed, run the bundled
-`node <skill-directory>/scripts/inspect-ai-sdk-contract.mjs <app-root>`, where
-`<skill-directory>` is the directory containing the selected streaming
-`SKILL.md`, not the target repository or this `references/` directory. Keep its
-JSON as static evidence. A nonzero result or unrecognized installed source
-blocks this binding; do not continue from version assumptions.
+After dependencies are installed, run
+`node <skill-directory>/scripts/inspect-ai-sdk-contract.mjs <app-root>`
+(`<skill-directory>` = the directory containing the streaming `SKILL.md`) and
+keep its JSON as static evidence. A nonzero result blocks this binding.
 
-Before changing dependencies, record the hashes of `package.json` and the
-repository lockfile plus the exact installed `next` and `ai` versions. Add only
-the required tracing dependency with the repository's existing package manager,
-then run its frozen-lock install (`npm ci`, `pnpm install --frozen-lockfile`, or
-the equivalent). Re-record the hashes and versions. An unexplained framework,
-AI SDK, or unrelated dependency change blocks this binding; do not fix tracing
-by upgrading the application stack.
-
-Use public instrumentation APIs. A call whose name is underscored or whose SDK
-documentation/source marks it private/internal is forbidden unless the exact
-dependency version is pinned in the lockfile and an executable test exercises
-that call in the built production bundle and exact launcher. Without both, use a
-public API or mark the affected binding `blocked`; a typecheck or mock does not
-prove a private runtime hook.
+Record `package.json`/lockfile hashes and exact `next`/`ai` versions before and
+after adding the tracing dependency via the repository's existing package
+manager with a frozen-lock install. Any unrelated dependency change blocks the
+binding. Use only public SDK APIs; a private/underscored call requires a pinned
+version plus an executable test in the built production bundle, otherwise mark
+that capability `blocked`.
 
 ## Contents
 
@@ -53,19 +42,13 @@ self-contained diagnostics/proof criteria and contain no competing adapter.
 
 ## 1. Preserve one application turn
 
-- One completed user turn is one application root with a stable business name.
-- Begin after auth/request/session validation but before `streamText` is
-  constructed. Set the exact session and available customer ID on the active
-  root so AI SDK children inherit it.
-- Keep the root open through generation, tool calls, streaming, persistence,
-  final semantic output, error/cancellation handling, and framework telemetry
-  settlement. Returning `StreamTextResult` or a response is not completion.
-- Preserve the application's existing consumer, tee, buffering, backpressure,
-  persistence, retry, error, and disconnect semantics.
-
-The root requires bounded semantic current-message input and final-answer or
-normalized terminal output. Counts or omission markers alone are
-behavior-blind and cannot pass semantic evaluation.
+One completed user turn is one application root with a stable business name.
+Start it after auth/session validation but before `streamText` is constructed;
+set the exact session/customer ID on the active root so AI SDK children inherit
+it. Keep the root open through generation, tools, streaming, persistence, and
+framework telemetry settlement — returning a response is not completion. The
+root needs bounded semantic input and a final answer or normalized terminal
+output; counts or omission markers alone are behavior-blind.
 
 ### Activate the root without rerunning application work
 
@@ -176,38 +159,27 @@ root or flush.
 
 ## 2. Bind one real runtime and explicit routing
 
-- Initialize Judgeval once in the Node branch of `instrumentation.ts`, before
-  readiness and requests. Use a delayed import so Edge instrumentation does not
-  load the Node SDK.
-- Externalize/deduplicate `judgeval` in the existing Next config without
-  replacing unrelated settings. Inspect the production server bundle and prove
-  instrumentation plus route use one shared Judgeval/OpenTelemetry runtime.
-- Require the intended existing project. Require a resolved runtime ID and
-  compare it with a deployment-provided expected project ID when available;
-  otherwise keep exact routing blocked until a unique live probe settles in that
-  exact project. Forward key, organization, project, provided ID, and endpoint overrides into the production
-  standalone/serverless launcher; a host `.env` is not container propagation.
-- Before testing, write a deployment ledger naming the exact checked-in build
-  and start commands, script, output artifact, runtime process, and—when used by
-  the selected production-style topology—Docker Compose file(s), service,
-  profiles, and env-file. When that selected topology uses Compose, render
+- Initialize Judgeval once in the Node branch of `instrumentation.ts` (delayed
+  import so Edge does not load the Node SDK). Externalize/deduplicate
+  `judgeval` in the existing Next config and prove instrumentation plus route
+  share one Judgeval/OpenTelemetry runtime in the production server bundle.
+- Require the intended existing project, fail-closed: compare the resolved
+  runtime ID with the expected project ID, or keep routing blocked until a
+  unique live probe settles in that exact project. If name-based init can
+  create projects, resolve through a read-only lookup first.
+- **The selected checked-in launcher is authoritative.** Write a deployment
+  ledger: exact build/start commands, runtime process, and — when the topology
+  uses Compose — the compose file, service, and env-file. Render
   `docker compose config` with those exact inputs and prove every required
-  `JUDGMENT_*` value is forwarded into the service. Missing forwarding is a
-  deployment failure; an environment value visible only on the host does not
-  pass. Retain only variable names plus redacted equality/presence checks in
-  evidence—never copy rendered secret values into logs or traces.
-- Run the built real launcher with project explicitly empty and with a unique
-  unknown name or ID of the same type it accepts under a 30-second supervisor
-  and guaranteed cleanup. Both must exit with the expected routing error before
-  readiness, the unknown target must not be created, and a valid-target positive
-  control must start. `unset`, timeout, unrelated failure, or nonempty resolved
-  ID alone does not pass.
-- Run the valid-target positive and both routing negatives through the exact
-  checked-in Compose service when the selected topology uses Compose. Starting
-  `.next/standalone/server.js` directly on the host is useful diagnosis but
-  cannot substitute for the deployment, routing, or export proof.
-- Inspect resolution semantics first. If name initialization can create a
-  project, use a read-only lookup and reject the unknown name before that path.
+  `JUDGMENT_*` value is forwarded into the scored service. A value visible only
+  on the host is a deployment failure. A direct host run of
+  `.next/standalone/server.js` is diagnostic only and cannot pass the
+  deployment, routing, or export gates.
+- Run the real launcher (through Compose when Compose is the topology) three
+  ways: valid project (must start), project explicitly empty, and a unique
+  unknown name/ID of the accepted type (both must fail before readiness without
+  creating the unknown target). An `unset` that dotenv can repopulate is not a
+  negative test.
 
 Use the installed AI SDK 5/6 telemetry integration with Judgment's tracer and
 disable uncontrolled provider `recordInputs`/`recordOutputs`. Production route
@@ -215,47 +187,29 @@ evidence, not a successful build, proves singleton activation.
 
 ## 3. Use one fail-open turn outcome
 
-Use one manually controlled active root and one terminal-state owner:
+One manually controlled active root, one terminal-state owner:
 
-1. Guard every telemetry-only active-span lookup, rename, trace setter,
-   sanitizer/classifier call, status write, root end, telemetry reporter, and
-   flush report. After valid startup, tracing must not change the response or
-   application retry/persistence behavior. In particular, this is forbidden:
+1. Every telemetry-only operation — active-span lookup, rename, setter,
+   sanitizer, status write, root end, reporter, flush — runs inside a guard.
    `const span = Tracer.getCurrentSpan(); span?.updateName(name);` outside a
-   `traceOnly` callback.
-2. Keep original application errors only in memory. Store stable semantic
-   categories such as `stream_construction_failed`, `stream_failed`, and
-   `persistence_failed`; never pass raw provider/tool/DB errors to tracing.
-3. Preserve the repository's existing persistence-failure rethrow, recovery,
-   reporting, or intentional-swallow behavior exactly. Tracing does not choose
-   a new policy. Record recovered success only when the application really
-   recovered.
-4. Handle synchronous `streamText` construction failure through the same
-   terminal owner: record a bounded code, best-effort end/flush, then preserve
-   the original rethrow/recovery outside tracing.
-5. Make success, model/tool error, persistence failure, and cancellation
-   converge on one idempotent finalizer. Do not create a second traced path.
+   `traceOnly` callback is forbidden: an injected lookup failure must not
+   become a user-visible failure.
+2. Original application errors stay in memory. Tracing stores only a closed
+   application-owned code set (`stream_construction_failed`, `stream_failed`,
+   `persistence_failed`, ...) as bounded output like
+   `{ ok: false, errorCode: 'persistence_failed' }` with matching raw
+   OpenTelemetry `ERROR` status. Never `Tracer.setError(rawError)` or store
+   message/stack. Cancellation is an explicit bounded `cancelled` outcome and
+   never appears as success.
+3. Tracing does not choose new persistence/recovery policy; preserve the
+   repository's existing behavior exactly. Success, error, persistence failure,
+   and cancellation converge on one idempotent finalizer.
+4. A telemetry failure blocks tracing verification but never replaces the
+   reply, original exception, cancellation, or persistence result. A retained
+   pre-existing application consumer/completion promise is different: its
+   rejection is a real application outcome and keeps its existing semantics.
 
-Represent the terminal result and raw span status consistently. Use only a
-closed application-owned set of codes for unrecovered model, tool, persistence,
-stream, or application errors. Store a bounded output such as
-`{ ok: false, errorCode: 'persistence_failed' }` and set the root's raw
-OpenTelemetry status to `ERROR` with that same fixed code. Never call
-`Tracer.setError(rawError)` or store its message/stack. Success uses matching
-semantic output and non-error status. Cancellation uses an explicit bounded
-`cancelled` outcome and must never appear as success; whether it is `ERROR` or
-non-error is an application policy, but output and raw status must not
-contradict each other.
-
-A setter, sanitizer, reporter, root-end, tracing-only child-settlement observer,
-or exporter failure remains observable but cannot replace the generated reply,
-original exception, client cancellation, or persistence result. It blocks
-tracing verification. A retained pre-existing application consumer/completion
-promise is different: its rejection is a real stream/model/application outcome
-and must keep the repository's existing error, retry, and persistence semantics;
-do not swallow it as telemetry.
-
-Use separate synchronous and awaited guards. A synchronous `try/catch` cannot
+Use separate synchronous and awaited guards — a synchronous `try/catch` cannot
 catch a rejected `Tracer.forceFlush()` promise:
 
 ```ts
@@ -326,26 +280,18 @@ function requestJudgmentFlushWithDeadline(timeoutMs: number): Promise<boolean> {
 }
 ```
 
-Put trace-only sanitization/classification inside these callbacks. Await the
-async guard for promise-returning finalization/export; never detach it or let a
-rejection alter response, persistence, cancellation, retry, or the original
-exception. Inject a rejecting async callback into the sync guard during tests;
-it must be reported without an unhandled rejection, and the integration remains
-blocked until the call site uses the awaited guard.
+The timeout applies only to trace-only terminal writes/end/export — never to
+real generation, persistence, or an existing application-owned settlement
+promise. Default it to at most **500 ms**; a different bound requires a recorded
+application response/EOF SLO. On timeout, preserve the exact application
+response and mark export verification blocked — a five-second EOF delay for
+telemetry is a user-visible latency regression, not fail-open design. Route
+every exporter call through `requestJudgmentFlushWithDeadline`: a timed-out
+exporter stays the one process-wide in-flight call and later requests report
+busy instead of queueing.
 
-The timeout applies only to trace-only terminal writes/end/export, never to real
-generation, persistence, or an existing application-owned settlement promise.
-Default it to at most 500 ms. A different bound requires a recorded application
-response/EOF SLO and matched latency evidence. On timeout, preserve the exact
-application response and mark export verification blocked; waiting five seconds
-for telemetry is a user-visible regression, not a successful fail-open design.
-Use `requestJudgmentFlushWithDeadline` for every exporter call. A timed-out
-exporter promise remains the one process-wide in-flight call; later requests
-return a reported busy failure and leave their export evidence blocked rather
-than queueing an unbounded pass or creating one live `forceFlush()` per turn.
-
-Use a closed type for root error recording. This helper records only trace
-state; the application catch/rethrow/recovery remains outside it:
+Record root errors through a closed type; application catch/rethrow/recovery
+stays outside it:
 
 ```ts
 import type { Span } from '@opentelemetry/api';
@@ -376,67 +322,43 @@ one of its fixed categories, use `unexpected_application_error`.
 
 ## 4. Preserve exactly the existing stream topology
 
-- Map every pre-existing consumer, tee, and detached drain before editing. If
-  the response body is the only consumer, keep it the only consumer. Never add
-  `result.consumeStream()` or another full/text-stream consumer for tracing.
-- If the application already has multiple consumers, do not delete, move, or
-  repurpose one to make tracing easier. Identify the existing application owner
-  for each and require a public completion barrier covering every consumer that
-  belongs to this trace. The first consumer to finish is not such a barrier.
-- Retain the promise returned by every pre-existing programmatic consumer at
-  its existing call site. Observing that promise does not add, move, or
-  repurpose a consumer; discarding it with `void` loses candidate settlement
-  evidence. Use it only after installed-source proof shows it resolves after
-  the outer framework span. If several consumers belong to one trace, the
-  barrier must cover all of them.
-- Inspect AI SDK result getters too: do not use a promise such as
-  `finishReason` as a barrier if that installed version starts
-  `consumeStream()` internally.
-- Do not buffer the response for tracing. Forward chunks, status, status text,
-  and headers unchanged.
-- Characterize the uninstrumented disconnect policy before editing. If the
-  application already uses the request/disconnect signal to abort upstream
-  model/tool work, preserve that propagation before best-effort telemetry. Do
-  not add upstream abort solely for tracing.
-- Record `transport.client_disconnected` separately from the application
-  terminal outcome. A disconnect is not automatically an application
-  cancellation. When the application actually cancels, cancellation wins races
-  with `onFinish` and its check belongs in the persistence commit. When a
-  pre-existing application-owned consumer intentionally continues generation
-  or persistence, keep the application root open and record its eventual
-  success/failure alongside the disconnect.
-- Use a separate durable trace only when the application already defines the
-  continued work as a separate durable unit. If ownership is undocumented,
-  preserve behavior and report it `blocked` rather than forcing abort, moving
-  persistence, or inventing a tracing boundary.
-
-Adding an extra-consumer pattern is forbidden: a tee can remove backpressure
-and let generation, tools, and success persistence continue after the client
-cancels. A pre-existing extra consumer is an application-ownership question,
-not permission to race root finalization against whichever consumer finishes
-first.
+- Map every pre-existing consumer, tee, and detached drain before editing.
+  **Never add `result.consumeStream()` or any extra consumer for tracing** — a
+  tee removes backpressure and lets generation, tools, and persistence continue
+  after the client cancels. If the response body is the only consumer, keep it
+  the only one.
+- With multiple pre-existing consumers, do not delete or repurpose any.
+  Require a public completion barrier covering every consumer that belongs to
+  this trace; the first consumer to finish is not such a barrier. Retain each
+  pre-existing consumer's promise at its existing call site (do not `void` it)
+  and use it as settlement evidence only after installed-source proof that it
+  resolves after the outer framework span. Beware result getters such as
+  `finishReason` that internally start `consumeStream()`.
+- Do not buffer the response; forward chunks, status, and headers unchanged.
+- Characterize the uninstrumented disconnect policy before editing. Record
+  `transport.client_disconnected` separately from the application terminal
+  outcome: a disconnect is not automatically a cancellation. If the app already
+  aborts upstream on disconnect, preserve that; do not add upstream abort for
+  tracing. When a pre-existing detached consumer intentionally continues, keep
+  the root open and record its eventual result alongside the disconnect. If
+  continued-work ownership is undocumented, preserve behavior and report
+  `blocked` rather than inventing a boundary.
 
 ## 5. Finalize in binding order
 
-Before writing the finalizer, inspect the installed AI SDK source or source map
-and record the exact order of `onFinish`, `onError`, `onAbort`, consumer
-completion, and outer `ai.streamText` span end. In supported AI SDK 5/6 source,
-`onFinish` and `onError` run before `rootSpan.end()`, so an application-root end
-or final `forceFlush()` reachable from either callback is structurally early.
-The installed source also does not await `onAbort`, so that callback cannot own
-awaited finalization; do not infer its exact position from that fact alone.
-These callbacks may record an in-memory outcome only. Final root end and flush
-must be owned outside them after a proven settlement barrier; without one,
-report the gate `blocked`.
+Inspect the installed AI SDK source/source map and record the exact order of
+`onFinish`, `onError`, `onAbort`, consumer completion, and outer `ai.streamText`
+span end. **In AI SDK 5/6, `onFinish` and `onError` run before the framework
+ends its span — an application-root end or `forceFlush()` reachable from either
+callback is structurally early** and truncates the root window. These callbacks
+may record an in-memory outcome only; final root end and flush are owned
+outside them after a proven settlement barrier, else the gate is `blocked`.
 
-Because AI SDK 5/6 does not await `onAbort`, any real application cancellation
-must win the application's existing outcome race synchronously before that
-callback returns and before any `await` or tracing work. But `onAbort` alone may
-describe one stream consumer rather than the whole application when a
-pre-existing detached owner continues. Always record the framework abort facet;
-map it to `markApplicationCancelled()` only when installed-source evidence and
-the application's terminal owner say the entire operation cancelled. The
-response wrapper separately records that the client disconnected:
+`onAbort` is not awaited, so it cannot own awaited finalization, and any real
+application cancellation must win its outcome race synchronously before that
+callback returns. `onAbort` may also describe one consumer rather than the
+whole application; map it to `markApplicationCancelled()` only when the
+application's terminal owner says the entire operation cancelled:
 
 ```ts
 onAbort: () => {
@@ -500,46 +422,30 @@ function finalizeTraceOnce(): Promise<void> {
 await finalizeTraceOnce();
 ```
 
-`terminalState` is an instrumentation-local, pure synchronous mirror of the
-repository's real application outcome; it never controls response, persistence,
-retry, or cancellation. `markApplicationCancelled()` and
-`markStreamFailure()` translate
-already-observed application events into fixed trace categories;
-`freezeAndRead()` atomically returns the winner and prevents a later callback
-from overwriting it. Guard every transition so an injected throw blocks tracing
-evidence without changing application behavior. The application's existing
-terminal-outcome rule decides which event is mirrored as the winner. Test two
-concurrent callers and prove both receive the same pending trace-finalization
-promise until its one end/flush attempt finishes. Separately prove that a slow
-real `frameworkSettled` promise is awaited to its actual outcome and is never
-raced by the 500 ms trace-only deadline.
+`terminalState` is an instrumentation-local synchronous mirror of the real
+application outcome; it never controls response, persistence, retry, or
+cancellation. `freezeAndRead()` atomically returns the winner. Guard every
+transition. Test two concurrent callers (both must receive the same pending
+finalization promise) and prove a slow real `frameworkSettled` promise is
+awaited to its actual outcome, never raced by the 500 ms trace-only deadline.
 
 ### Bind finalization to the existing settlement owner
 
-Do not add `consumeStream`, a tee, or a background drain for tracing. First
-classify who owned settlement before instrumentation. Use `response_eof` only
-when the pre-instrumentation EOF path already awaited the same application or
-framework promise and propagated its rejection to the client. Use
-`detached_application` when an existing programmatic consumer settled
-independently; in that mode EOF and reader errors retain their original timing
-and semantics, while the consumer's original owner finalizes the trace later.
-If neither owner has a proven completion signal after the outer AI SDK telemetry
-span, the binding remains `blocked`.
+Classify who owned settlement before instrumentation. `response_eof`: the
+pre-instrumentation EOF path already awaited the application/framework promise
+and propagated its rejection to the client. `detached_application`: an existing
+programmatic consumer settled independently — EOF and reader errors keep their
+original timing, and that consumer's original owner finalizes the trace later.
+If neither owner has a proven completion signal after the outer AI SDK
+telemetry span, the binding is `blocked`.
 
-The wrapper replaces the returned response body; it is not a second consumer.
-It forwards the same chunks, status, status text, and headers. Give its outer
-queue a zero high-water mark so it does not add a second eager chunk beyond the
-source stream's own queue. `frameworkSettled` is the retained existing promise
-from the pre-instrumentation call site, including its existing timeout/rejection
-policy. Only the owner that already awaited it may keep doing so: the response
-wrapper in `response_eof` mode, or the original detached owner in
-`detached_application` mode. Never rebind a detached rejection to
-`controller.error`, delay clean EOF for it, wrap it in the 500 ms telemetry
-deadline, or introduce a tracing timeout. If the existing owner has no proven
-terminal settlement, this response binding is `blocked`.
-`finalizeTraceOnce()` is the bounded, total, single-flight function above: it records
-throw/rejection/timeout and always resolves. Never memoize the raw
-trace-write/end/flush promise or include `frameworkSettled` inside it.
+The wrapper below replaces the returned response body (it is not a second
+consumer): same chunks, status, and headers, with a zero high-water mark so it
+adds no eager extra pull. `frameworkSettled` is the retained pre-existing
+promise with its existing timeout/rejection policy; only the owner that already
+awaited it keeps doing so. Never rebind a detached rejection to
+`controller.error`, delay clean EOF for it, or wrap it in the telemetry
+deadline.
 
 ```ts
 interface StreamLifecycle {
@@ -658,60 +564,29 @@ function bindResponseLifecycle(
 }
 ```
 
-If `frameworkSettled` can reject for real application work, retain exactly the
-pre-instrumentation response/error/persistence behavior. Do not convert that
-rejection into a telemetry-only warning. In contrast, all trace-only work
-inside `finalizeTraceOnce()` is guarded and cannot reject or hang into the response.
-The wrapper-local `clientDisconnected` bit prevents an EOF/error continuation from
-closing, erroring, or reclassifying the stream after the disconnect. Do not
-catch controller-state errors as model/stream failures.
+Notes on the adapter:
 
-For an existing detached application consumer, use
-`settlementOwner='detached_application'` and bind `finalizeTraceOnce()` to that
-consumer's original application owner, not to EOF, reader error, or the response
-`cancel()` method. That owner records the actual final application success/error
-after `frameworkSettled`; the root can therefore contain both
-`transport.client_disconnected=true` and a successful application result. If no
-existing lifecycle owner can keep the runtime alive through that finalizer,
-export-after-disconnect remains `blocked` rather than being forced into the
-transport callback.
-
-Before accepting this adapter, compare it with the uninstrumented response
-under a slow reader and a mid-read abort. With no downstream read, it must not
-pull the source more often than the original response. Chunk bytes/order,
-status, headers, terminal outcome, upstream cancellation, persistence, and
-tool-call behavior must match. If the installed runtime needs BYOB or another
-non-default queuing strategy, this generic adapter is not proof; implement and
-test the repository's existing strategy or leave the binding `blocked`.
-
-Measure matched uninstrumented and instrumented time-to-first-byte, chunk
-cadence, EOF, and cancel-promise settlement for success, failure, and disconnect.
-Trace-only finalization may add at most 500 ms to EOF by default; a different
-limit requires a recorded application SLO. A telemetry timeout preserves the
-application result but blocks the export gate. Do not accept a five-second EOF
-delay merely because it eventually produces a trace.
-
-`onFinish`, `onAbort`, response cancellation, a sleep, a UI waterfall, a private
-hook, or a second consumer is not a framework-child settlement signal. If no
-reliable signal exists, report the child-window gate `blocked`; do not end the
-root early and call it complete.
-
-Never final-flush while a framework child may still be open. That can export a
-root and inner children before their parent arrives. A trace with a non-root
-span whose parent is absent fails tree completeness and cannot pass timing even
-when the root covers every span that happened to arrive.
-
-When the response consumer belongs to this trace, its wrapper may delay only
-final EOF while finalization settles. Its cancel branch records transport
-disconnect and preserves the response reader's original cancellation behavior;
-it invokes an additional upstream abort only when the uninstrumented
-application already did so. Existing application-owned continued work settles
-through its original owner, which records the final application outcome and
-invokes fail-open finalization. Preserve controller close/error/cancel behavior.
-
-Do not assume Next.js `after(...)`/`waitUntil(...)` survives hard kill. Use it
-only when the tested deployment guarantees the promise through freeze and
-shutdown. Never use detached `void Tracer.forceFlush()`.
+- A real `frameworkSettled` rejection keeps the exact pre-instrumentation
+  response/error/persistence behavior; trace-only work inside
+  `finalizeTraceOnce()` is guarded and cannot reject or hang into the response.
+- In `detached_application` mode, bind `finalizeTraceOnce()` to the detached
+  consumer's original owner — not EOF, reader error, or `cancel()`. The root
+  may then contain both `transport.client_disconnected=true` and a successful
+  application result. If no existing owner can keep the runtime alive through
+  that finalizer, export-after-disconnect is `blocked`.
+- Compare against the uninstrumented response under a slow reader and a
+  mid-read abort: identical chunk bytes/order, status, headers, terminal
+  outcome, upstream cancellation, persistence, and pull cadence. If the runtime
+  needs BYOB or a non-default queuing strategy, this generic adapter is not
+  proof — implement the repository's strategy or leave the binding `blocked`.
+- `onFinish`, `onAbort`, response cancellation, a sleep, a UI waterfall, a
+  private hook, or a second consumer is not a framework-child settlement
+  signal. Never final-flush while a framework child may still be open: an
+  orphaned child fails tree completeness and timing. If no reliable signal
+  exists, report the child-window gate `blocked` — do not end the root early.
+- Do not assume Next.js `after(...)`/`waitUntil(...)` survives hard kill; use
+  it only when the tested deployment guarantees it. Never use detached
+  `void Tracer.forceFlush()`.
 
 ## 6. Keep root/tool evidence safe and useful
 
@@ -946,57 +821,40 @@ function boundSanitizedTraceValue(rawValue: unknown): unknown {
 }
 ```
 
-This is not a PII or domain-secret policy. Unit-test every listed shape,
-including `Authorization: ApiKey`, `Authorization: Digest`,
-`Proxy-Authorization: Custom`, quoted JSON keys, a nearby benign field that must
-survive, structured and serialized `JUDGMENT_API_KEY` /
-`AWS_SECRET_ACCESS_KEY` / `CLIENT_SECRET` / camelCase access-token/password /
-cookie/session-token values, `Set-Cookie`, `HTTP_AUTHORIZATION`, the exact
-unquoted regressions `PASSWORD=CANARY,SECOND SURVIVES_PASSWORD_TAIL`,
-`PASSWORD=CANARY,SECOND=NO SURVIVES_ASSIGNMENT_SHAPED_TAIL`,
-`BENIGN=SURVIVES,PASSWORD=CANARY`, and
-`FOO=x;JUDGMENT_API_KEY=CANARY`, quoted comma/semicolon-bearing `PASSWORD`,
-query-string/plain assignments, and a full URL such as
-`https://example.test/?api_key=CANARY&benign=SURVIVES` plus a fragment such as
-`https://example.test/#access_token=CANARY&benign=SURVIVES`, and URL userinfo
-under a non-HTTP scheme such as `amqps://user:CANARY@host` plus password-only
-`redis://:CANARY@host:6379/0`, and quoted shell headers such as
-`curl -H 'Authorization: Bearer CANARY' https://benign.example` and
-`curl -H 'Cookie: sid=CANARY; refresh=CANARY2' https://benign.example`, plus
-single-quoted Digest values containing double-quoted fields and double-quoted
-Cookie values containing single-quoted fields while the adjacent URL survives;
-standalone `Bearer CANARY` and `Basic CANARY` text; unquoted
-`httpAuthorization=Bearer CANARY`; and RSA, EC, OPENSSH, and generic multiline
-private-key blocks. Put several of these in one composed payload with benign
-markers before, between, and after them so ordering bugs are exercised. Assert
-the full unquoted password values (including `,SECOND` and `,SECOND=NO`) are
-absent while both whitespace-separated survival markers remain, both later
-secret assignments are redacted, and `SURVIVES` plus `FOO=x` remain. Also assert
+This is not a PII or domain-secret policy. Unit-test the complete ordered
+sanitizer on one composed payload with benign markers before, between, and
+after the canaries — isolated regex tests miss ordering bugs (a greedy inline
+rule consuming a private key's BEGIN delimiter, or a quoted-header rule eating
+a benign tail). The fixture matrix must cover at least: scheme-agnostic
+`Authorization:`/`Proxy-Authorization:` headers (ApiKey/Digest/custom),
+standalone `Bearer <token>`/`Basic <token>`, camelCase and prefixed
+assignments (`JUDGMENT_API_KEY=`, `AWS_SECRET_ACCESS_KEY=`,
+`httpAuthorization=`), `Set-Cookie`/session values, secret-first
+comma/semicolon tails (`PASSWORD=CANARY,SECOND=NO` — later benign fields need
+whitespace), query/fragment credentials
+(`https://example.test/?api_key=CANARY&benign=SURVIVES`), URL userinfo under
+any scheme (`amqps://user:CANARY@host`, `redis://:CANARY@host`), quoted shell
+headers with opposite nested quote kinds
+(`curl -H 'Authorization: Bearer CANARY' https://benign.example`), provider
+token shapes (`sk-`, `ghp_`, `github_pat_`, `xox*-`), and RSA/EC/OPENSSH
+multiline private-key blocks. Assert every canary is absent, every benign
+marker survives, and
 `traceUtf8ByteLength(JSON.stringify(boundSanitizedTraceValue(value))) <= 1_500`
-for long ASCII, multibyte Unicode/emoji, escape-heavy strings, arrays, objects,
-and the truncation envelope;
-then run the raw canary matrix below. Isolated regex/helper tests are not
-stored-path proof. Use the combined `boundSanitizedTraceValue` at setters so
-full sanitization always precedes aggregate bounding; do not rely on a greedy
-whole-line JSON regex. A policy-approved business `sessionId` is deliberately
-separate and is set through `Tracer.setSessionId`, not copied through this
-payload sanitizer.
+for long ASCII, multibyte, and escape-heavy values.
 
-Sanitize the final composed value before bounding. The complete serialized
-`judgment.input`/`judgment.output`, including truncation metadata, must be no
-larger than 1,500 UTF-8 bytes and remain parseable in settled raw storage.
-Truncation is not redaction. Treat short queries, shell commands,
-URLs, headers, and error messages as sensitive too; remove unnecessary PII
-before bounding. A conservative credential/auth baseline does not claim to
-cover general PII or application-specific domain secrets.
+Always call the combined `boundSanitizedTraceValue` at setters so sanitization
+precedes aggregate bounding — bounding first can split a credential and leak
+its remainder. Truncation is not redaction. The complete serialized
+`judgment.input`/`judgment.output`, including truncation metadata, must stay
+<=1,500 UTF-8 bytes and parseable in settled raw storage. The business
+`sessionId` goes through `Tracer.setSessionId`, not this sanitizer.
 
-Use a benign semantic marker plus non-real OpenAI-style `sk-`, GitHub-style
-`ghp_` and `github_pat_`, other installed-provider/API-key, authorization,
-cookie/session, secret-assignment, URL-credential, and private-key canaries in
-input, output/error, and beyond-bound positions. Search every settled raw root,
-provider/tool child, event, and resource attribute. The marker survives; all
-canaries, accumulated history, system prompts, tool schemas, files, and
-unapproved payloads are absent.
+For stored proof, place a benign semantic marker plus non-real canaries
+(provider tokens, authorization, cookie/session, secret assignments, URL
+credentials, private key) in input, output/error, and beyond-bound positions;
+then search every settled raw root, provider/tool child, event, and resource
+attribute. The marker survives; every canary, history, system prompt, tool
+schema, and file body is absent.
 
 First prove from the installed source that tool `execute` runs inside the
 framework `ai.toolCall` active span. With bulk framework input/output capture
@@ -1040,133 +898,70 @@ try {
 }
 ```
 
-Never call `Tracer.setError(error)` or copy the raw message/stack. A generic
-`ai.toolCall` with missing, `null`, or empty-object Judgment IO fails tool
-usefulness. If the installed API does not expose the correct active span,
-retain its business-name attribute, report scanability/IO `blocked`, and do not
-duplicate the tool merely to improve display.
-The guarded callbacks own every trace-only lookup, rename, sanitizer, and
-setter. The real tool call stays outside them and runs once even when any
-telemetry operation throws. `projectApprovedToolInput/Output` are
-application-specific field allowlists, not identity functions: they retain only
-the approved operation/outcome fields and omit file bodies, history, schemas,
-raw records, command output, and other bulk data even when those fields contain
-no credential-shaped text. The required order is field projection without
-truncation, then sanitization, then aggregate bounding; bounding before
-sanitization can split a credential and leak its remainder.
-
-Do not hoist `Tracer.getCurrentSpan()`, `span.updateName(...)`, field
-projection, `sanitizeTraceValue`, `boundSanitizedTraceValue`, or a trace setter
-out of `traceOnly` for convenience. Fault-inject each stage independently,
-including lookup throw, rename throw, projection/sanitizer throw, input/output
-setter throw, and status throw. For every subcase the real tool executes once,
-returns or throws the same value/object, persistence and streamed bytes are
-unchanged, and the telemetry fault is reported safely.
+A generic `ai.toolCall` with missing/empty Judgment IO fails tool usefulness.
+If the installed API does not expose the correct active span, retain the
+business-name attribute, report scanability/IO `blocked`, and do not duplicate
+the tool span. `projectApprovedToolInput/Output` are application-specific field
+allowlists, not identity functions: approved operation/outcome fields only, no
+file bodies, history, schemas, or bulk data. Order: projection, then
+sanitization, then bounding. The real tool call stays outside every guard and
+runs once even when telemetry throws — fault-inject each stage (lookup, rename,
+projection/sanitizer, setters, status) and prove the tool result, persistence,
+and streamed bytes are unchanged.
 
 ## 7. Prove the production path
 
-Before running any build, typecheck, import, static-generation, smoke, or dev
-command, start a fresh process with all Judgment/Judgeval/OTel credentials and
-exporter headers explicitly empty before application/SDK import and use
-`OTEL_SDK_DISABLED=true` where supported, or inject a proven no-export/in-memory
-tracer. A frozen-lock build must leave the recorded `next`/`ai` versions
-unchanged. Only the separately launched real production-style route receives
-live export configuration.
+Keep every non-live command (unit/stub/build/typecheck/import/smoke/dev/
+static-generation) export-free per the router's isolation principle: fresh
+process, all Judgment/Judgeval/OTel credentials and exporter headers explicitly
+overridden empty before any app/SDK import, `OTEL_SDK_DISABLED=true` where
+supported. Only the separately launched production-style route gets live export
+configuration.
 
-Build and start the production-style route. Run uniquely identifiable normal,
-tool, model-error, persistence-error, real client-abort, and cold-start/restart
-turns. Record exact session/customer IDs and returned application outcomes.
-Immediately restart after a completed bounded export where applicable, wait for
-ingestion, then reconcile settled raw Judgment data.
+Run the scenario through the section-2 deployment ledger — through the exact
+checked-in Compose path when Compose is the topology, with the rendered
+`docker compose config` retained as forwarding evidence. Exercise uniquely
+identifiable normal, tool, model-error, persistence-error, real client-abort,
+and cold-start/restart turns; record exact session/customer IDs and returned
+outcomes; reconcile settled raw Judgment data after each awaited bounded flush
+(poll until the parent tree, span-ID set, terminal IO, and timestamps are
+unchanged across a named stability interval; record a span-set hash).
 
-Use the deployment ledger from section 2. When the selected production-style
-topology uses Docker Compose, first retain the rendered `docker compose config`
-showing every required
-`JUDGMENT_*` variable forwarded into the named service, then run the scenario
-and valid/empty/unknown routing controls through that exact checked-in Compose
-path. A direct host launch of `.next/standalone/server.js` is only diagnostic and
-cannot pass these gates.
+Trigger the client abort while a response-body read is pending — a disconnect
+before reading or after EOF does not characterize active work. Compare against
+the uninstrumented app: if the baseline cancels upstream, the instrumented path
+still cancels with no late side effects; if a pre-existing owner continues and
+persists, tracing preserves that and stores transport disconnect separately
+from the final application outcome.
 
-After each awaited bounded flush, poll until the expected complete parent tree,
-span-ID set, terminal IO/status, and timestamps remain unchanged across a named
-stability interval. Record raw-read timestamps and a span-set hash. Missing or
-changing data remains `blocked`; a single read cannot prove late framework/tool
-children have settled.
-
-Evidence is path-specific. An error-path trace cannot pass normal success,
-tool, persistence, cancellation, or general finalization. Inspect at least one
-real successful tool-bearing stored turn before those gates pass. Verify every
-parent resolves before timing arithmetic; a partial tree is never a timing
-pass. A finite client-owned HTTP stream has a disconnect-ownership gate:
-uncharacterized baseline behavior, unexercised mid-read disconnect, changed
-upstream/persistence policy, or undocumented continued completion is `blocked`
-or failed, never `not-applicable`. Do not claim the integration complete while
-a required path remains blocked.
-
-Platform Behavior/Code Judge evidence is result-specific too. Cite the exact
-settled trace ID, Behavior/Judge version, result ID, and inspected result
-payload. Zero returned results, a missing result, or an aggregate without that
-provenance is blocked evidence; never infer a green outcome from absence.
-
-Trigger the disconnect while a response-body read is pending. This is the
-binding test for the extra-consumer/backpressure race; a disconnect before
-stream reading or after ordinary EOF does not characterize active work. Compare
-against the uninstrumented app. If the baseline cancels upstream, prove the
-instrumented path still cancels and prevents late side effects. If a pre-existing
-application owner continues and persists, prove tracing preserves that behavior
-and stores transport disconnect separately from the final application outcome.
-
-Require:
+Required stored evidence (apply the router's margin arithmetic and evidence
+labels):
 
 - exactly one nonzero-duration business root per completed turn, with final
   semantic IO and no health/readback noise;
-- raw trace/span/parent IDs prove model/tool children share the root trace and
-  stay inside its window. Normalize units and derive timestamp precision from
-  raw stored values or documented platform resolution. Compute `start_margin =
-  min(child_start) - root_start` and `end_margin = root_end - max(child_end)`;
-  each margin `>= 0` passes, `-precision < margin < 0` is inconclusive and must
-  be repeated, and `margin <= -precision` fails. An empty root parent is required
-  only without deliberate upstream distributed context;
-- raw stored kinds are `agent` for the application turn root and `tool` for
-  executed business tools. Real model spans must be `llm` when the installed
-  public integration exposes a supported binding; if it does not, model-kind
-  coverage is `blocked`, not inferred from an `ai.*` name or filled with a fake
-  span;
+- model/tool children share the root trace and pass the margin rule; empty
+  root parent unless deliberate upstream context exists;
+- raw stored kinds: `agent` root, `tool` business tools; model spans `llm`
+  when the installed public integration supports it, else `blocked` — never
+  inferred from an `ai.*` name;
 - exact session/customer identity and completed pre/post-restart roots;
-- transport disconnect is distinct from the final application outcome; real
-  application cancellation still stops upstream work/no late side effects,
-  while pre-existing detached completion keeps its actual owner and result;
 - success, model error, persistence error, and abort each have matching stored
-  terminal outcomes;
-- exact routing reaches the intended project; the empty and same-type unknown
-  name/ID negatives fail as expected without readiness/creation; and the valid
-  positive control starts; and
-- semantic/storage parsing and the full raw canary search pass, including one
-  composed standalone Bearer/Basic plus multiline-private-key payload and a
-  proof that every final serialized stored attribute is <=1,500 UTF-8 bytes; and
-- active-span lookup, rename, sanitizer, and setter fault injection leaves the
-  response, persistence, tool count, and original exception identical; and
-- a hung-exporter injection followed by multiple completed turns starts at most
-  one process-wide exporter call, reports later attempts busy/blocked, retains
-  no per-request exporter-call storm, and leaves every response unchanged.
+  terminal outcomes; transport disconnect stays distinct from the application
+  outcome;
+- routing positive/empty/unknown controls behave as section 2 requires;
+- the raw canary search passes, including one composed standalone Bearer/Basic
+  plus multiline-private-key payload, and every stored attribute is <=1,500
+  UTF-8 bytes and parseable;
+- fault injection (lookup, rename, sanitizer, setters) leaves response,
+  persistence, tool count, and original exception identical; and
+- a hung-exporter injection across multiple turns yields at most one
+  process-wide exporter call, later attempts reported busy, all responses
+  unchanged.
 
 For each terminal path, record matched uninstrumented/instrumented
-time-to-first-byte, chunk cadence, EOF, and cancel-promise settlement. The
-default trace-only finalization/export overhead budget is <=500 ms unless a
-documented application SLO proves another value. Timeout remains fail-open and
-blocks export verification.
-
-Run every non-live unit/stub/fake/build/typecheck/import/smoke/dev/static-
-generation command in a fresh process with all export-capable
-Judgment/Judgeval/OTel credentials and exporter headers explicitly overridden
-empty before any app/SDK import, and `OTEL_SDK_DISABLED=true` where supported;
-or inject a proven no-export/in-memory tracer. If config requires a project
-string, use an obviously synthetic value only after proving the exporter is
-disabled. Merely unsetting can let dotenv refill values, clearing after import
-is too late, and `setdefault` is not isolation. Reconcile named live probes and
-require zero unexplained Monitoring roots.
-
-Builds, types, unit tests, scratch spans, and successful HTTP responses are not
-stored-path proof. Missing traffic, credentials, terminal hooks, raw spans, or
-export is `blocked`; use `not-applicable` only when the architecture genuinely
-lacks a gate.
+time-to-first-byte, chunk cadence, EOF, and cancel settlement; trace-only
+overhead stays <=500 ms unless a documented SLO proves another value. Evidence
+is path-specific — an error-path trace cannot pass the success gates; inspect
+at least one real successful tool-bearing stored turn. Missing traffic,
+credentials, raw spans, or export is `blocked`, and an unexercised
+disconnect-ownership gate is `blocked` or failed, never `not-applicable`.

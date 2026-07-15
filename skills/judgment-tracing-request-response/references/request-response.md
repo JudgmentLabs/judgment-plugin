@@ -439,28 +439,26 @@ uses it; the decorator's public `span_type` option needs no redundant setter.
 
 ## 6. Verify raw settled evidence
 
-Run the real server and a real provider-backed turn. Also exercise a tool and a
-caught tool failure, a service restart, both routing-negative startup cases,
-and the valid-target positive control.
-Use non-real canaries for OpenAI-style `sk-`, GitHub-style `ghp_` and
-`github_pat_`, other installed API/provider keys, `Authorization: ApiKey`,
-`Authorization: Digest`, custom `Proxy-Authorization`, `HTTP_AUTHORIZATION`,
-`X-Api-Key`, `JUDGMENT_API_KEY`, `AWS_SECRET_ACCESS_KEY`, camelCase and prefixed
-secret/token/password keys, cookies/session tokens, URL credentials, and
-private-key blocks. Include the exact standalone fixtures `Bearer
-STANDALONE_BEARER_CANARY_0123456789` and `Basic
-QkFTSUNfQ0FOQVJZXzEyMzQ1Njc4OTA=` plus a multiline private-key block containing
-an authorization line. The complete block and both standalone credentials must
-disappear while adjacent benign markers survive. This proves private-key and
-standalone-auth removal ran before greedy composed-text redaction.
-Place them before and beyond the bound and in output/error fields; retain a
-benign semantic marker.
+Run the real server and a real provider-backed turn, plus a tool call, a caught
+tool failure, a service restart, both routing negatives, and the valid-target
+positive control.
+Use non-real canaries covering provider tokens (`sk-`, `ghp_`, `github_pat_`),
+scheme-agnostic authorization headers (ApiKey/Digest/custom Proxy-
+Authorization, `HTTP_AUTHORIZATION`, `X-Api-Key`), prefixed and camelCase
+secret assignments (`JUDGMENT_API_KEY`, `AWS_SECRET_ACCESS_KEY`),
+cookies/sessions, URL credentials, and private-key blocks — in input,
+output/error, and beyond-bound positions with a surviving benign marker.
+Include the exact standalone fixtures
+`Bearer STANDALONE_BEARER_CANARY_0123456789` and
+`Basic QkFTSUNfQ0FOQVJZXzEyMzQ1Njc4OTA=` plus a multiline private-key block
+containing an authorization line: the complete block and both standalone
+credentials must disappear while adjacent markers survive, proving
+private-key/standalone removal ran before greedy composed-text redaction.
 
-Record the exact real request/result ledger. After the awaited bounded flush,
-poll raw data until the expected complete parent tree, span-ID set, terminal
-input/output/status, and timestamps remain unchanged across a named stability
-interval. Record read timestamps and a span-set hash. Missing or changing data
-stays `blocked`; a single successful query is not settled evidence.
+Record the exact request/result ledger. After the awaited bounded flush, poll
+raw data until the parent tree, span-ID set, terminal IO/status, and timestamps
+are unchanged across a named stability interval; record read timestamps and a
+span-set hash. Missing or changing data stays `blocked`.
 
 Inspect raw attributes for every span in the matching session. Reconcile the
 request ledger to exactly one business root per request admitted to
@@ -477,53 +475,34 @@ schemas, file bodies, static prompts, and environment values.
 Parse the settled structured root input/output; a bounded preview is not proof
 that platform clipping preserved valid JSON.
 
-Run every non-live unit/stub/fake/build/typecheck/import/smoke/dev/static-
-generation command in a fresh process with all export-capable
-Judgment/Judgeval/OTel credentials and exporter headers explicitly overridden
-empty before any app/SDK import, and `OTEL_SDK_DISABLED=true` where supported;
-or inject a proven no-export tracer. If config requires a project string, use
-an obviously synthetic value only after proving the exporter is disabled.
-Merely unsetting can let dotenv refill values, clearing after import is too
-late, and `setdefault` is not isolation. Reconcile named live probes with stored
-roots and require zero unexplained test-generated traces.
+Keep every non-live command export-free per the router's isolation principle,
+reconcile named live probes with stored roots, and require zero unexplained
+test-generated traces.
 
-Safely inject failures independently into root and LLM/tool scope
-start/enter/exit, every active-span lookup and trace/status setter actually
-used, sanitizer/classifier, reporter/finalizer, flush throw/rejection, and flush
-timeout supported by the installed runtime. Add a rename or explicit
-span-type/kind-setter fault only when that call exists in the implementation.
-Each subcase must leave the real request/model/tool path single-run and preserve
-response, persistence, retry, and original exceptions.
-An automatic decorator is not presumed fail-open: if a scope injection changes
-behavior, use a guarded optional manual scope or leave that subcase `blocked`.
+Fault-inject independently: root and LLM/tool scope start/enter/exit, every
+active-span lookup and setter actually used (including the mandatory span-kind
+setter in the copyable root), sanitizer/classifier, reporter/finalizer, and
+flush throw/rejection/timeout. Each subcase leaves the real
+request/model/tool path single-run with response, persistence, retry, and
+original exceptions preserved. An automatic decorator is not presumed
+fail-open: if a scope injection changes behavior, use a guarded optional manual
+scope or leave that subcase `blocked`.
 
-Record raw `trace_id`, `span_id`, and `parent_span_id` for the turn root and
-every local LLM/tool child. Require an empty root parent only without deliberate
-upstream context; otherwise prove the expected W3C/distributed chain and the
-root's complete local lifetime and IO. A UI waterfall is not proof.
-The copyable example selects Judgeval 1.2's public `fork=True` for the ordinary
-no-upstream mode so an already-instrumented HTTP/ASGI scope cannot silently
-choose the boundary. If deliberate distributed propagation is part of the app,
-enter the public `Tracer.continue_trace(carrier)` scope and use `fork=False` for
-the turn. For any other installed version, inspect and executable-test its
-documented fresh/fork behavior before implementation; unsupported parent
-control leaves root parentage `blocked`.
+Record raw `trace_id`/`span_id`/`parent_span_id` for the root and every child.
+Require an empty root parent only without deliberate upstream context; the
+copyable example uses Judgeval 1.2's public `fork=True` for the ordinary
+no-upstream mode so an ambient HTTP/ASGI scope cannot silently choose the
+boundary. With deliberate distributed propagation, enter the public
+`Tracer.continue_trace(carrier)` scope and use `fork=False`. For any other
+installed version, executable-test its documented fresh/fork behavior first;
+unsupported parent control leaves parentage `blocked`.
 
-Normalize units and derive timestamp precision from raw stored values or
-documented platform resolution. For every complete tree compute `start_margin =
-min(child_start) - root_start` and `end_margin = root_end - max(child_end)`.
-Each margin `>= 0` passes; `-precision < margin < 0` is inconclusive and must be
-repeated; `margin <= -precision` fails. For every unrecovered root/child error,
-the safe terminal output and raw OpenTelemetry `ERROR` status must carry the
-same fixed application-owned code. A recovered tool child may be `ERROR` while
-its truthful recovered parent succeeds.
-
-Behaviors, Judges, and Tests are supplemental evidence, not substitutes for
-the ledger/raw reconciliation above. Count one only when its exact recorded
-result belongs to this current controlled run, exposes the matching trace ID,
-and is inspectable at result level. A Behavior/Judge/Test definition, an enabled
-configuration, or an aggregate score without trace-linked current-run results
-is `blocked` as evidence.
+Apply the router's margin arithmetic to every complete tree. Every unrecovered
+root/child error carries the same fixed application-owned code in safe output
+and raw `ERROR` status; a recovered tool child may be `ERROR` under a truthful
+successful parent. Behaviors/Judges/Tests count only with exact inspectable
+current-run result IDs linked to this run's trace IDs — definitions,
+configuration, or aggregates alone are `blocked` evidence.
 
 ## 7. Use an honest final evidence table
 
