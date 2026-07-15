@@ -1,6 +1,6 @@
 ---
 name: judgment-tracing
-description: Route Judgment and judgeval work, including adding, auditing, or debugging tracing in unfamiliar codebases. Use this first for generic requests such as "Add Judgment tracing to <path>" when the agent architecture is not yet known; inspect the real execution path, then load the matching architecture-specific Judgment tracing skill. Also use for Judgment evaluations, code judges, datasets, monitoring, and SDK or documentation lookup.
+description: Route Judgment and judgeval work, including adding, auditing, or debugging tracing in unfamiliar codebases. Use this first for generic requests such as "Add Judgment tracing to this agent" when the agent architecture is not yet known; inspect the real execution path, then load the matching architecture-specific Judgment tracing skill. Also use for Judgment evaluations, code judges, datasets, monitoring, and SDK or documentation lookup.
 allowed-tools:
   - WebFetch(domain:docs.judgmentlabs.ai)
   - Bash(curl *docs.judgmentlabs.ai/*)

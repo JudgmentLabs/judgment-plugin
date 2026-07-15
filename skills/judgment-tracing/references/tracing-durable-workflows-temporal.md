@@ -38,7 +38,7 @@ trace: job.submit
 trace: workflow.pre_approval
   input: workflow_id + bounded goal
   children: plan, execute-step, LLM, and tool work
-  output: plan/step counts + awaiting_approval
+  output: bounded plan/step-result semantics + awaiting_approval
 
 trace: job.approve
   input: workflow_id + approver/decision
@@ -47,7 +47,7 @@ trace: job.approve
 trace: workflow.post_approval
   input: workflow_id + approval outcome
   children: synthesis, report-write, LLM, and tool work
-  output: completed status + bounded result metadata
+  output: completed status + bounded synthesis/result semantics + artifact identity
 ```
 
 Do not create this shape by leaving a span object open across an indefinite
@@ -155,6 +155,7 @@ async def execute_step(request):
         "workflow_id": info.workflow_id,
         "step_index": request.step.index,
         "step_title": bounded_text(request.step.title),
+        "step_instruction": safe_step_instruction(request.step),
         "attempt": info.attempt,
     })
 
@@ -163,7 +164,8 @@ async def execute_step(request):
     Tracer.set_output({
         "step_index": result.index,
         "status": "completed",
-        "tool_count": len(result.tool_calls),
+        "result_summary": safe_step_result_summary(result),
+        "tool_outcomes": safe_tool_outcomes(result.tool_calls),
     })
     return result
 ```
@@ -172,6 +174,13 @@ async def execute_step(request):
 policy. Do not record complete workflow state, prior reports, HTML, files,
 conversation history, or credentials merely because an activity request is a
 dataclass that automatic capture can serialize.
+
+`safe_step_instruction`, `safe_step_result_summary`, and `safe_tool_outcomes`
+are application policy adapters, not permission to return only metadata. A
+root output such as `{"step_index": 3, "status": "completed",
+"tool_count": 4}` is not faithful step output because it never says what the
+step produced. Keep the smallest sanitized business result that would let a
+reviewer distinguish a correct step from a wrong one.
 
 After live traffic, prove that the `workflow.execute_step` span is the
 parentless root of its own trace. If it still shares the `POST /jobs` trace ID
@@ -213,6 +222,7 @@ async def traced_plan(request: PlanRequest) -> PlanResult:
     Tracer.set_output({
         "status": "completed",
         "step_count": len(result.steps),
+        "plan": safe_plan_items(result.steps),
     })
     return result
 
@@ -234,6 +244,18 @@ immediate worker kill. Do not put `force_flush()` inside `traced_plan`, launch
 it as fire-and-forget work, or wait until worker shutdown. Match the installed
 SDK signature; current Python Judgeval 1.2.x returns a boolean from
 `force_flush(timeout_millis)`.
+
+`safe_plan_items` must retain bounded plan meaning, such as safe item titles
+and instructions, not only their count. Apply the same rule to synthesis: a
+report path and word count support the output but do not replace a bounded
+summary of the report/result. The following outputs are explicitly
+insufficient when the richer result exists:
+
+```json
+{"status":"completed","step_count":3}
+{"step_index":3,"status":"completed","tool_count":4}
+{"status":"completed","report_path":"report.md","word_count":99}
+```
 
 ## Producer routes and polling
 
@@ -334,8 +356,10 @@ credentials into every trace.
 - Disable automatic root/tool input and output capture when payloads are not
   known to be small and safe.
 - Redact secrets before truncating; truncation alone still stores a secret.
-- Prefer stable IDs, counts, statuses, safe titles, byte lengths, and bounded
-  summaries.
+- Use stable IDs, counts, statuses, safe titles, and byte lengths as supporting
+  metadata alongside a bounded semantic trigger/result. They are not faithful
+  root IO by themselves when the activity produced a plan, step result, or
+  synthesis.
 - Keep business tool identity and useful semantic input/output-or-error.
 - Do not duplicate framework-generated LLM or tool spans with a second manual
   span unless the framework span cannot carry the required evidence.

@@ -157,41 +157,83 @@ omit secrets and unnecessary PII first, then apply a size bound. Treat free-form
 search queries, shell commands, URLs, headers, and error messages as potentially
 sensitive even when they are short.
 
-Make free-form capture fail closed. If the application has no tested,
-approved telemetry sanitizer, store safe metadata such as character count,
-intent/status, and an `omitted: "no-approved-sanitizer"` marker instead of the
-raw text. Approval must come from an existing application policy, library, or
-explicit user decision; a regex helper authored during this tracing task does
-not become an approved sanitizer merely because a few example tests pass. Do
-not silently substitute a helper that only calls `slice`/`substring` or a new
-starter regex. If the repository has no approved sanitizer, implement the
-omit-only branch below and do not add a `text` field. A typical adapter has this
-shape:
+Keep free-form capture both useful and explicit. The trace root needs a bounded
+semantic representation of the current user message and final answer; character
+counts plus an omission marker are privacy-safe but behavior-blind. An
+omit-only root is an incomplete integration, not a successful completion gate.
+
+Choose and document one of three modes:
+
+1. **Existing approved sanitizer:** use the application's established policy,
+   then apply a hard bound.
+2. **Conservative tracing baseline:** when autonomous instrumentation is
+   expected and the repository has no sanitizer, add a narrowly scoped
+   application-owned trace redactor for common credential/auth patterns, apply
+   it before a hard bound, and mark application privacy review as required.
+   This is a useful baseline, not a claim of universal secret/PII safety.
+3. **Strict omission:** when repository policy forbids adding a baseline,
+   retain only safe metadata and `omitted: "policy-blocked"`, then report root
+   IO and behavior evaluation as blocked. Do not call the task complete.
+
+Never silently substitute a helper that only calls `slice` or `substring`.
+The conservative baseline must at least cover the credential and authorization
+classes exercised by its tests, remain small enough to review, and clearly
+state that application-specific PII or domain secrets need a product decision.
+A representative adapter is:
 
 ```typescript
 type SafeTraceText = {
   text?: string;
   originalCharacters: number;
   truncated?: boolean;
-  omitted?: "no-approved-sanitizer";
+  policy: "approved" | "conservative-baseline" | "strict-omission";
+  omitted?: "policy-blocked";
 };
 
+function getTraceTextPolicy(): "conservative-baseline" | "strict-omission" {
+  return process.env.JUDGMENT_TRACE_TEXT_POLICY === "strict-omission"
+    ? "strict-omission"
+    : "conservative-baseline";
+}
+
+function conservativeTraceRedactor(value: string): string {
+  return value
+    .replace(
+      /\b(?:sk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b/g,
+      "[REDACTED_CREDENTIAL]",
+    )
+    .replace(
+      /\b(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}\b/gi,
+      "$1 [REDACTED]",
+    )
+    .replace(
+      /\b(Authorization\s*:\s*)[^\r\n]+/gi,
+      "$1[REDACTED]",
+    )
+    .replace(
+      /\b((?:password|token|secret|api[_-]?key)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      "$1[REDACTED]",
+    );
+}
+
 function sanitizeAndBoundTraceText(value: string, max = 2_000): SafeTraceText {
-  const sanitizer = getApprovedTelemetrySanitizer();
-  if (!sanitizer) {
+  const approved = getApprovedTelemetrySanitizer();
+  const policy = getTraceTextPolicy();
+  if (!approved && policy === "strict-omission") {
     return {
       originalCharacters: value.length,
-      omitted: "no-approved-sanitizer",
+      policy,
+      omitted: "policy-blocked",
     };
   }
 
-  // The sanitizer runs first. It must cover the application's credential,
-  // authorization-header, token, password/secret-assignment, and PII policy.
-  const redacted = sanitizer(value);
+  const sanitizer = approved ?? conservativeTraceRedactor;
+  const redacted = sanitizer(value); // redaction always runs before bounding
   return {
     text: redacted.length <= max ? redacted : `${redacted.slice(0, max)}…`,
     originalCharacters: value.length,
     truncated: redacted.length > max,
+    policy: approved ? "approved" : "conservative-baseline",
   };
 }
 
@@ -205,15 +247,19 @@ function safeTraceError(error: unknown): Error {
 }
 ```
 
-Do not invent a claim that a short regex is universally safe. A starter
-redactor for `sk-…`, `ghp_…`, bearer credentials, and
-`password|token|secret|api_key = …` still needs application-specific review and
-tests; it is not an acceptable default for a repository that had no sanitizer
-before this task. Add a deterministic no-sanitizer test that asserts `text` is
-absent and `omitted === "no-approved-sanitizer"`. When an approved sanitizer
-does exist, also test multiple policy-relevant synthetic credential shapes, a
-benign marker, and an over-limit value before live traffic. The safe fallback
-is omission, not best-effort regex replacement or unredacted truncation.
+Do not claim that a short regex is universally safe. A conservative baseline
+for `sk-…`, `ghp_…`, bearer credentials, authorization headers, and
+`password|token|secret|api_key = …` still needs application review and tests.
+What makes it acceptable as an instrumentation baseline is the explicit
+limited policy, useful retained semantics, and adversarial raw-attribute test;
+it is not a substitute for the application's PII and domain-secret policy.
+
+Test the selected mode before live traffic. For approved or conservative mode,
+require a benign marker to survive, all in-bound and out-of-bound synthetic
+credential canaries to disappear, and the stored value to stay within the hard
+bound. For strict omission, assert `text` is absent and
+`omitted === "policy-blocked"`, and report the usefulness gate as failed. The
+same policy applies to the final answer and error paths.
 
 Apply the same policy to recorded errors. Provider and tool errors can embed a
 request URL, headers, or an echo of the input. When they can, pass
@@ -440,14 +486,13 @@ instrumented.
    least one canary inside the portion that survives the documented size bound,
    and at least one canary beyond it. Read the settled raw attribute value, not
    only a platform preview that may visually redact it. If an approved
-   sanitizer exists, require the benign marker to remain, every canary—including
-   the in-bound ones—to be absent, and the stored value to stay within the
-   documented maximum plus any truncation marker. If no approved sanitizer
-   exists, include an arbitrary unique free-form marker that no starter regex
-   recognizes and require *all* supplied free-form text to be absent while the
-   omission metadata remains. Also trigger one failing turn carrying the same
-   synthetic canaries and confirm that settled raw error attributes exclude
-   them.
+   or conservative baseline is active, require the benign marker to remain,
+   every canary—including the in-bound ones—to be absent, and the stored value
+   to stay within the documented maximum plus any truncation marker. If strict
+   omission is required, include an arbitrary unique marker and require all
+   free-form text to be absent, but record that root usefulness remains blocked.
+   Also trigger one failing turn carrying the same synthetic canaries and
+   confirm that settled raw error attributes exclude them.
 
 Both turns must arrive. Each trace must have a non-zero-duration application
 root with final bounded input/output and the expected session/customer data.
@@ -471,7 +516,7 @@ blocked; do not replace it with “you should see traces.”
 | Name quality | The application root and any manual spans use stable business-specific names rather than copied generic placeholders |
 | Parentage | AI SDK model/tool spans and meaningful manual spans share the application's trace ID |
 | Context | Exact stable session/customer identifiers are set inside the active root |
-| Payload safety | The report identifies the pre-existing approved sanitizer or proves the omit-only fallback. A newly authored starter regex does not satisfy this gate. Automatic framework capture is deliberately configured; settled full raw attributes (not previews) pass long, in-bound canary, arbitrary-marker/no-sanitizer, and error-path checks and exclude full histories, schemas, documents, files, and secrets |
+| Payload safety and usefulness | The report identifies the approved sanitizer, conservative baseline with required privacy review, or strict-omission blocker. For an integration claimed complete, settled full raw attributes retain the benign semantic marker, remove in-bound and out-of-bound credential canaries, remain bounded, and exclude histories, schemas, documents, files, and secrets. Omit-only metadata does not pass the usefulness half of this gate |
 | Tool usefulness | Every executed business tool retains its identity plus bounded semantic input and output-or-error after automatic capture is disabled |
 | Finalization | Persistence and final output complete before framework telemetry closes; the application root ends afterward |
 | Export lifecycle | A bounded awaited `Tracer.forceFlush()` attempt completes before response EOF, or is attached to a deployment lifecycle primitive proven to survive the tested freeze/restart behavior; exporter failure is visible without corrupting a valid application reply |

@@ -22,8 +22,9 @@ For a checkpointed loop:
   action/result/error and updated state are durably saved.
 - `judgment.session_id` is the stable run ID on every iteration root.
 - The root input is a bounded, sanitized goal and state summary.
-- The root output identifies the decision type and bounded result, status, or
-  error that was persisted.
+- The root output identifies the decision type and the branch-specific bounded
+  result or error that was persisted. Status is supporting metadata; status
+  alone never describes a successful iteration that produced a result.
 - The model call and the tool selected by that decision are children.
 - Compaction, checkpoint, retry, and finish decisions remain visible as their
   own iteration traces rather than disappearing into an outer run wrapper.
@@ -38,22 +39,22 @@ session_id = run_id
 trace hermes.iteration (decision_type=plan)
   root input: goal + iteration + bounded state summary
   child: LLM decision
-  root output: decision=plan + plan item count
+  root output: decision=plan + bounded plan items/summary + item count
 
 trace hermes.iteration (decision_type=tool)
   root input: goal + iteration + bounded state summary
   child: LLM decision
   child: search tool
-  root output: decision=tool + tool name + bounded result metadata
+  root output: decision=tool + tool name + bounded action result/error
 
 trace hermes.iteration (decision_type=compact)
   child: LLM decision
-  root output: decision=compact + before/after state sizes
+  root output: decision=compact + bounded compaction summary + before/after sizes
 
 trace hermes.iteration (decision_type=finish)
   child: LLM decision
   child: final report write when applicable
-  root output: decision=finish + completed status + result path/size
+  root output: decision=finish + bounded final-result summary + path/size
 ```
 
 ## Why a process-lifetime or whole-run root is fragile
@@ -95,12 +96,15 @@ after the save succeeds or after a failure outcome is itself persisted.
 
 The iteration must also be a fresh trace. A background promise launched from a
 traced start/resume request can retain that request's async context after the
-HTTP root ends. With a Judgeval version that supports the documented
-`fork: true` observe option, use it defensively so a durable iteration becomes
-a fresh linked-trace root when any caller span is active. Otherwise explicitly
-detach the request context before starting the loop. In either case, raw stored
-evidence must show each iteration as a parentless root with a trace ID distinct
-from the start/resume request.
+HTTP root ends. Do not launch the loop inside the observed start/resume
+callback. The observed callback should create or load and persist the run,
+return its accepted response, and fully exit. The outer HTTP handler should
+await that callback and only then launch the background loop after the dynamic
+trace scope has ended. With a Judgeval version that supports the documented
+`fork: true` observe option, use it as an additional defense, not as proof that
+context detached. Otherwise use the installed version's explicit fresh-root
+mechanism. In every case, raw stored evidence must show each iteration as a
+parentless root with a trace ID distinct from the start/resume request.
 
 ## TypeScript pattern
 
@@ -128,12 +132,7 @@ async step(run: RunState): Promise<RunState> {
         applyDecision(run, decision, result);
         await this.store.saveRun(run);
 
-        Tracer.setOutput({
-          decisionType: decision.type,
-          toolName: decision.type === "tool" ? decision.tool : undefined,
-          status: run.status,
-          result: summarizeResult(result),
-        });
+        Tracer.setOutput(summarizeIterationOutcome(decision, result, run));
         return run;
       } catch (error) {
         const message = safeError(error);
@@ -157,10 +156,57 @@ async step(run: RunState): Promise<RunState> {
 }
 ```
 
-`boundedText`, `summarizeState`, `summarizeResult`, and `safeError` are
-placeholders for real redaction and size policies. Do not store full notes,
-fetched pages, report bodies, conversation history, system prompts, tool
-schemas, or credentials.
+`boundedText`, `summarizeState`, the `safe*` outcome helpers, and `safeError`
+are placeholders for real redaction and size policies. Do not store full
+notes, fetched pages, report bodies, conversation history, system prompts,
+tool schemas, or credentials.
+
+Implement `summarizeIterationOutcome` exhaustively for the application's real
+decision union. It must retain the branch-specific persisted outcome, for
+example:
+
+```typescript
+function summarizeIterationOutcome(
+  decision: Decision,
+  result: ToolResult | undefined,
+  run: RunState,
+) {
+  switch (decision.type) {
+    case "plan":
+      return {
+        decisionType: "plan",
+        plan: safePlanItems(decision.items),
+        planItemCount: decision.items.length,
+      };
+    case "tool":
+      return {
+        decisionType: "tool",
+        toolName: decision.tool,
+        outcome: result ? safeToolResult(result) : { status: "no-result" },
+      };
+    case "compact":
+      return {
+        decisionType: "compact",
+        summary: safeCompactionSummary(decision.summary),
+        beforeItems: decision.beforeItems,
+        afterItems: decision.afterItems,
+      };
+    case "finish":
+      return {
+        decisionType: "finish",
+        finalSummary: safeFinalSummary(decision.answer),
+        reportPath: safeRelativePath(run.reportPath),
+        reportBytes: run.reportBytes,
+      };
+    default:
+      return assertNever(decision);
+  }
+}
+```
+
+Adapt field names to the repository rather than inventing state. A value such
+as `{ decisionType, toolName, status }` is incomplete when the iteration saved
+a plan, tool result, compaction summary, or final answer.
 
 Inspect the installed SDK before using `fork`; do not assume every version has
 the same option. If it is unavailable, use that version's documented
@@ -183,6 +229,11 @@ do not create a second root or put the iteration number in the span name.
   URL host/path when safe, byte counts, result counts, status, and output path.
 - Disable automatic capture when it would store full pages, notes, reports,
   files, or large accumulated state.
+- Inspect every raw provider attribute, including invocation parameters and
+  system-prompt fields. Hiding generic input/output is insufficient if another
+  attribute still stores the full static prompt. If the installed integration
+  cannot suppress that field, use a manual LLM span with automatic IO disabled
+  or report privacy-safe LLM coverage as blocked.
 - Avoid a generic tool wrapper plus a second business tool span for the same
   action.
 
@@ -199,7 +250,11 @@ request ID. Verify from stored roots that:
 
 Add a process/container instance attribute when the SDK/runtime does not do so
 automatically. It should change after restart while the session ID stays the
-same. Never invent a new run/session ID merely to mark the restart.
+same. Create a random boot UUID once at module/bootstrap initialization and
+attach that value to every root from that process, for example
+`const processBootId = randomUUID()`. Do not use hostname plus PID alone in a
+container; both can be reused after restart and falsely imply that one process
+survived. Never invent a new run/session ID merely to mark the restart.
 
 ## Export lifecycle
 

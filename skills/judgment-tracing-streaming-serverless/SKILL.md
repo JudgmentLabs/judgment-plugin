@@ -28,11 +28,13 @@ the user request and final streamed answer. Character counts plus
 for debugging and behaviors; that state is incomplete, not a successful
 integration.
 
-Use an existing approved application sanitizer or an explicitly configured
-product policy before bounding a preview. Do not invent a starter regex and
-call it approved. If no policy exists, fail closed on unapproved text, report
-the usefulness blocker plainly, and do not claim completion until a policy
-owner supplies the narrow semantic fields that may be retained.
+Prefer an existing approved application sanitizer. If none exists and the task
+requires autonomous useful instrumentation, the focused reference permits a
+narrowly scoped conservative credential/auth redactor before bounding; label
+that mode as requiring application privacy review and do not claim universal
+PII or domain-secret coverage. If repository policy requires strict omission,
+report the usefulness blocker plainly and do not claim completion until a
+policy owner supplies the semantic fields that may be retained.
 
 ## Non-negotiable implementation gates
 

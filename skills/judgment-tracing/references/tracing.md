@@ -88,6 +88,15 @@ finished. Start the root when that work is triggered and end it only after its
 final output and important side effects are complete. The return of a function
 is not always the end of the work it started.
 
+Define faithful root IO before adding child spans. From the root's
+`judgment.input` and `judgment.output` alone, a reviewer or behavior must be
+able to tell what business work was requested and what final result or error it
+produced. Stable IDs, status, counts, lengths, hashes, paths, and omission
+markers are useful supporting metadata, but they are not a semantic trigger or
+result by themselves when the application produced one. Child LLM/tool spans
+cannot repair a behavior-blind root because Judgment evaluations use the root
+as their primary evidence.
+
 Do not trace every route merely because a scenario calls it. Agent-generating
 writes such as a chat turn, task submission, approval, or durable work phase are
 normally meaningful roots. Health checks, repeated status polls, and read-only
