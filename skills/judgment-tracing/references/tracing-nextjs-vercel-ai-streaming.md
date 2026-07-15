@@ -160,8 +160,13 @@ sensitive even when they are short.
 Make free-form capture fail closed. If the application has no tested,
 approved telemetry sanitizer, store safe metadata such as character count,
 intent/status, and an `omitted: "no-approved-sanitizer"` marker instead of the
-raw text. Do not silently substitute a helper that only calls `slice` or
-`substring`. A typical adapter has this shape:
+raw text. Approval must come from an existing application policy, library, or
+explicit user decision; a regex helper authored during this tracing task does
+not become an approved sanitizer merely because a few example tests pass. Do
+not silently substitute a helper that only calls `slice`/`substring` or a new
+starter regex. If the repository has no approved sanitizer, implement the
+omit-only branch below and do not add a `text` field. A typical adapter has this
+shape:
 
 ```typescript
 type SafeTraceText = {
@@ -203,9 +208,12 @@ function safeTraceError(error: unknown): Error {
 Do not invent a claim that a short regex is universally safe. A starter
 redactor for `sk-…`, `ghp_…`, bearer credentials, and
 `password|token|secret|api_key = …` still needs application-specific review and
-tests. Add deterministic unit tests for the chosen helper with multiple
-synthetic credential shapes, a benign marker, and an over-limit value before
-live traffic. The safe fallback is omission, not unredacted truncation.
+tests; it is not an acceptable default for a repository that had no sanitizer
+before this task. Add a deterministic no-sanitizer test that asserts `text` is
+absent and `omitted === "no-approved-sanitizer"`. When an approved sanitizer
+does exist, also test multiple policy-relevant synthetic credential shapes, a
+benign marker, and an over-limit value before live traffic. The safe fallback
+is omission, not best-effort regex replacement or unredacted truncation.
 
 Apply the same policy to recorded errors. Provider and tool errors can embed a
 request URL, headers, or an echo of the input. When they can, pass
@@ -431,12 +439,15 @@ instrumented.
    value, and a password/token assignment). Place the benign marker and at
    least one canary inside the portion that survives the documented size bound,
    and at least one canary beyond it. Read the settled raw attribute value, not
-   only a platform preview that may visually redact it. Require the benign
-   marker to remain when the policy allows safe text, every canary—including
+   only a platform preview that may visually redact it. If an approved
+   sanitizer exists, require the benign marker to remain, every canary—including
    the in-bound ones—to be absent, and the stored value to stay within the
-   documented maximum plus any truncation marker. Also trigger one failing turn
-   carrying the same synthetic canaries and confirm that settled raw error
-   attributes exclude them.
+   documented maximum plus any truncation marker. If no approved sanitizer
+   exists, include an arbitrary unique free-form marker that no starter regex
+   recognizes and require *all* supplied free-form text to be absent while the
+   omission metadata remains. Also trigger one failing turn carrying the same
+   synthetic canaries and confirm that settled raw error attributes exclude
+   them.
 
 Both turns must arrive. Each trace must have a non-zero-duration application
 root with final bounded input/output and the expected session/customer data.
@@ -460,7 +471,7 @@ blocked; do not replace it with “you should see traces.”
 | Name quality | The application root and any manual spans use stable business-specific names rather than copied generic placeholders |
 | Parentage | AI SDK model/tool spans and meaningful manual spans share the application's trace ID |
 | Context | Exact stable session/customer identifiers are set inside the active root |
-| Payload safety | Automatic framework input/output capture is deliberately configured; long and secret-shaped tests show that raw attributes are sanitized as well as bounded and exclude full histories, schemas, documents, files, and secrets |
+| Payload safety | The report identifies the pre-existing approved sanitizer or proves the omit-only fallback. A newly authored starter regex does not satisfy this gate. Automatic framework capture is deliberately configured; settled full raw attributes (not previews) pass long, in-bound canary, arbitrary-marker/no-sanitizer, and error-path checks and exclude full histories, schemas, documents, files, and secrets |
 | Tool usefulness | Every executed business tool retains its identity plus bounded semantic input and output-or-error after automatic capture is disabled |
 | Finalization | Persistence and final output complete before framework telemetry closes; the application root ends afterward |
 | Export lifecycle | A bounded awaited `Tracer.forceFlush()` attempt completes before response EOF, or is attached to a deployment lifecycle primitive proven to survive the tested freeze/restart behavior; exporter failure is visible without corrupting a valid application reply |
