@@ -185,6 +185,56 @@ or activity lifecycle point that runs after the root ends to make a bounded,
 observable `Tracer.force_flush()` attempt. A flush executed while the root is
 still open cannot export that root's final state.
 
+When the Temporal activity function is itself the observed root, code inside
+that function cannot flush the root after it ends. Use two layers: an inner
+observed business function and an outer Temporal activity that waits for the
+inner root to finish, then flushes before acknowledging activity completion.
+For Python Judgeval 1.2.x, a representative shape is:
+
+```python
+import asyncio
+from temporalio import activity
+
+@Tracer.observe(
+    span_type="agent",
+    span_name="workflow.plan",
+    record_input=False,
+    record_output=False,
+    fork=True,
+)
+async def traced_plan(request: PlanRequest) -> PlanResult:
+    Tracer.set_session_id(request.workflow_id)
+    Tracer.set_input({
+        "workflow_id": request.workflow_id,
+        "goal": bounded_text(request.goal),
+        "attempt": activity.info().attempt,
+    })
+    result = await perform_plan(request)
+    Tracer.set_output({
+        "status": "completed",
+        "step_count": len(result.steps),
+    })
+    return result
+
+@activity.defn(name="plan")
+async def plan_activity(request: PlanRequest) -> PlanResult:
+    result = await traced_plan(request)  # the Judgment root has ended
+    flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
+    if not flushed:
+        activity.logger.error(
+            "Judgment flush timed out after completed plan activity"
+        )
+        # Production policy may still return the durable result, but tracing
+        # verification must mark this checkpoint as not trace-safe.
+    return result
+```
+
+Apply the same completion barrier to every activity root that must survive an
+immediate worker kill. Do not put `force_flush()` inside `traced_plan`, launch
+it as fire-and-forget work, or wait until worker shutdown. Match the installed
+SDK signature; current Python Judgeval 1.2.x returns a boolean from
+`force_flush(timeout_millis)`.
+
 ## Producer routes and polling
 
 Trace short producer writes separately from durable execution:
