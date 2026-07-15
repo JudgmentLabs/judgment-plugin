@@ -170,6 +170,12 @@ the wrong endpoint. Compare the `JUDGMENT_*` variable names in the resolved
 launcher configuration with the names visible inside the running process,
 without printing secret values.
 
+Treat `${JUDGMENT_PROJECT_NAME:-sidecar}`, a hard-coded example project, or an
+SDK default as a failed configuration. Add a negative configuration check that
+resolves or starts the real launcher with `JUDGMENT_PROJECT_NAME` intentionally
+unset and requires a clear pre-start failure. It must not boot successfully and
+silently route to a guessed project.
+
 ## Fake and real modes
 
 Fake CLI mode is valuable for deterministic application checks:
@@ -228,9 +234,11 @@ Use two independent wrapper sessions and at least one wrapper restart:
 3. End and boundedly flush the completed roots, then restart the wrapper.
 4. Resume the first and second sessions using their persisted CLI IDs.
 5. Exercise at least one CLI tool-producing task when practical.
-6. Query Judgment by the exact CLI session IDs and wait for ingestion to
+6. Separately unset `JUDGMENT_PROJECT_NAME` and prove that the production
+   launcher fails closed before serving traffic rather than guessing a project.
+7. Query Judgment by the exact CLI session IDs and wait for ingestion to
    settle.
-7. Inspect roots, CLI children, errors, session membership, and raw payloads.
+8. Inspect roots, CLI children, errors, session membership, and raw payloads.
 
 The result passes only when:
 
@@ -273,7 +281,7 @@ restart-safe when its flush failed.
 | Canonical session | Root uses the returned/resumed CLI session ID, not only wrapper ID |
 | Resume continuity | Pre- and post-restart turns share the exact CLI session |
 | CLI child | Invocation mode, resume flag, exit code, duration, and bounded outcome are present |
-| Project routing | Resolved runtime includes explicit project and endpoint override names |
+| Project routing | Resolved runtime includes explicit project and endpoint override names; an unset-project negative test fails before startup and no fallback project is accepted |
 | Noise | Health/session reads and ASGI plumbing do not dominate |
 | Payload safety | No token, environment dump, raw transcript, or workspace/file body is stored |
 | Real mode | A real authenticated first turn and resume turn were exercised |
