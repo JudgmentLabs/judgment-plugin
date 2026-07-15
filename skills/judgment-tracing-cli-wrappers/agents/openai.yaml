@@ -1,0 +1,3 @@
+interface:
+  display_name: "Judgment Agent CLI Wrapper Tracing"
+  short_description: "Trace persistent Claude or Codex CLI wrappers"

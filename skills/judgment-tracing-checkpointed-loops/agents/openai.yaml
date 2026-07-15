@@ -1,0 +1,3 @@
+interface:
+  display_name: "Judgment Checkpointed Loop Tracing"
+  short_description: "Trace durable autonomous agent iterations"

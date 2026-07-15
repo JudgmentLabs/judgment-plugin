@@ -1,0 +1,3 @@
+interface:
+  display_name: "Judgment Durable Workflow Tracing"
+  short_description: "Trace Temporal, retries, signals, and HITL work"

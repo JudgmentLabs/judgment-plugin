@@ -1,0 +1,3 @@
+interface:
+  display_name: "Judgment Request Tracing"
+  short_description: "Trace synchronous agent requests and chat turns"

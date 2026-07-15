@@ -1,0 +1,3 @@
+interface:
+  display_name: "Judgment Streaming Tracing"
+  short_description: "Trace streamed and serverless agent turns"
