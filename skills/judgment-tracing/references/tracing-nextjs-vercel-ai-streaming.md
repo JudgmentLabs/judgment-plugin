@@ -120,7 +120,9 @@ const result = Tracer.getOTELTracer().startActiveSpan(
     Tracer.setSpanKind("agent", rootSpan);
     Tracer.setSessionId(session.id);
     Tracer.setCustomerId(session.customerId);
-    Tracer.setInput({ message: boundedText(userMessage) }, rootSpan);
+    Tracer.setInput({
+      message: sanitizeAndBoundTraceText(userMessage),
+    }, rootSpan);
 
     return streamText({
       // Keep the existing model, messages, tools, and generation settings.
@@ -132,10 +134,12 @@ const result = Tracer.getOTELTracer().startActiveSpan(
       },
       async onFinish({ response, text }) {
         await persistCompletedTurn(response);
-        Tracer.setOutput({ text: boundedText(text) }, rootSpan);
+        Tracer.setOutput({
+          text: sanitizeAndBoundTraceText(text),
+        }, rootSpan);
       },
       onError({ error }) {
-        Tracer.setError(error, rootSpan);
+        Tracer.setError(safeTraceError(error), rootSpan);
       },
       onAbort() {
         Tracer.setAttribute("agent.aborted", true, rootSpan);
@@ -145,13 +149,68 @@ const result = Tracer.getOTELTracer().startActiveSpan(
 );
 ```
 
-`boundedText` and `persistCompletedTurn` are placeholders: use the
-application's real sanitization and persistence behavior. Do not change the
-agent's behavior just to make tracing easier. **Bounded is not the same as
-sanitized**: truncating a secret still stores a secret. Redact or omit secrets
-and unnecessary PII first, then apply a size bound. Treat free-form search
-queries, shell commands, URLs, headers, and error messages as potentially
+`sanitizeAndBoundTraceText` and `persistCompletedTurn` are placeholders: replace
+them with the application's real sanitization and persistence behavior. Do not
+leave `sanitizeAndBoundTraceText` as a truncation-only helper. **Bounded is not
+the same as sanitized**: truncating a secret still stores a secret. Redact or
+omit secrets and unnecessary PII first, then apply a size bound. Treat free-form
+search queries, shell commands, URLs, headers, and error messages as potentially
 sensitive even when they are short.
+
+Make free-form capture fail closed. If the application has no tested,
+approved telemetry sanitizer, store safe metadata such as character count,
+intent/status, and an `omitted: "no-approved-sanitizer"` marker instead of the
+raw text. Do not silently substitute a helper that only calls `slice` or
+`substring`. A typical adapter has this shape:
+
+```typescript
+type SafeTraceText = {
+  text?: string;
+  originalCharacters: number;
+  truncated?: boolean;
+  omitted?: "no-approved-sanitizer";
+};
+
+function sanitizeAndBoundTraceText(value: string, max = 2_000): SafeTraceText {
+  const sanitizer = getApprovedTelemetrySanitizer();
+  if (!sanitizer) {
+    return {
+      originalCharacters: value.length,
+      omitted: "no-approved-sanitizer",
+    };
+  }
+
+  // The sanitizer runs first. It must cover the application's credential,
+  // authorization-header, token, password/secret-assignment, and PII policy.
+  const redacted = sanitizer(value);
+  return {
+    text: redacted.length <= max ? redacted : `${redacted.slice(0, max)}…`,
+    originalCharacters: value.length,
+    truncated: redacted.length > max,
+  };
+}
+
+function safeTraceError(error: unknown): Error {
+  const name = error instanceof Error ? error.name : "Error";
+  const message = error instanceof Error ? error.message : String(error);
+  const safe = sanitizeAndBoundTraceText(message, 500);
+  return new Error(
+    safe.text ? `${name}: ${safe.text}` : `${name}: message omitted from tracing`,
+  );
+}
+```
+
+Do not invent a claim that a short regex is universally safe. A starter
+redactor for `sk-…`, `ghp_…`, bearer credentials, and
+`password|token|secret|api_key = …` still needs application-specific review and
+tests. Add deterministic unit tests for the chosen helper with multiple
+synthetic credential shapes, a benign marker, and an over-limit value before
+live traffic. The safe fallback is omission, not unredacted truncation.
+
+Apply the same policy to recorded errors. Provider and tool errors can embed a
+request URL, headers, or an echo of the input. When they can, pass
+`Tracer.setError` a sanitized bounded message or an error class plus safe
+metadata, not the raw error object.
 
 The Vercel AI SDK can otherwise record accumulated conversation history,
 system prompts, tool schemas, and full tool payloads on every step. Keep
@@ -176,7 +235,19 @@ async execute({ orderId }) {
 Use the active framework tool span only after verifying that the integration
 keeps it active during `execute`. If it does not, add one manual child with
 automatic capture disabled instead of silently writing attributes to the wrong
-span.
+span. When the installed Judgeval/OpenTelemetry API exposes the active
+framework span and a live trace proves it is the tool span, updating that span's
+name to a stable business name is preferable to leaving only `ai.toolCall`:
+
+```typescript
+const toolSpan = Tracer.getCurrentSpan();
+toolSpan?.updateName("deskflow.tool.lookup_order");
+```
+
+Keep the framework's business-name attribute as well. If active-span identity
+or `updateName` support is uncertain, retain the framework span and its
+`ai.toolCall.name` attribute; teach the verifier/rendering layer to resolve that
+attribute instead of creating a duplicate manual span.
 
 ## 4. Finalize after the framework telemetry span, then flush
 
@@ -211,7 +282,7 @@ const result = streamText({
 // the AI SDK's final telemetry work retain the intended context.
 const streamDone = result.consumeStream({
   onError(error) {
-    Tracer.setError(error, rootSpan);
+    Tracer.setError(safeTraceError(error), rootSpan);
   },
 });
 
@@ -237,7 +308,7 @@ async function flushWithoutBreakingTheCompletedResponse(): Promise<void> {
 }
 
 const finalize = (error?: unknown): Promise<void> => {
-  if (error) Tracer.setError(error, rootSpan);
+  if (error) Tracer.setError(safeTraceError(error), rootSpan);
   return (finalization ??= (async () => {
     try {
       await streamDone;
@@ -355,8 +426,17 @@ instrumented.
 6. Start it again and send another turn in the same session when the app
    supports restart continuity.
 7. Inspect stored traces for the exact session ID or unique marker.
-8. Repeat with a long or secret-shaped input and confirm that raw stored
-   attributes are both bounded and sanitized.
+8. Repeat with a long input containing a unique benign marker plus multiple
+   non-real credential-shaped canaries (for example an API-key shape, a bearer
+   value, and a password/token assignment). Place the benign marker and at
+   least one canary inside the portion that survives the documented size bound,
+   and at least one canary beyond it. Read the settled raw attribute value, not
+   only a platform preview that may visually redact it. Require the benign
+   marker to remain when the policy allows safe text, every canary—including
+   the in-bound ones—to be absent, and the stored value to stay within the
+   documented maximum plus any truncation marker. Also trigger one failing turn
+   carrying the same synthetic canaries and confirm that settled raw error
+   attributes exclude them.
 
 Both turns must arrive. Each trace must have a non-zero-duration application
 root with final bounded input/output and the expected session/customer data.
