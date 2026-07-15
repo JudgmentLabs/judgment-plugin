@@ -265,6 +265,38 @@ lifecycle point the framework actually waits for. Match the exact call to the
 installed SDK; do not put the flush inside the observed function while its root
 is still open, and do not detach it as fire-and-forget work.
 
+For a Python HTTP wrapper, make the two layers visible in code so the ordering
+cannot be mistaken for a shutdown-only flush:
+
+```python
+import asyncio
+
+@Tracer.observe(
+    span_type="agent",
+    span_name="agent_cli.task",
+    record_input=False,
+    record_output=False,
+)
+async def traced_wrapper_task(request: TaskRequest) -> TaskResult:
+    Tracer.set_input(safe_task_input(request))
+    result = await run_and_persist_cli_turn(request)
+    Tracer.set_session_id(result.cli_session_id)
+    Tracer.set_output(safe_task_output(result))
+    return result
+
+@app.post("/tasks")
+async def create_task(request: TaskRequest):
+    result = await traced_wrapper_task(request)  # root has ended
+    flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
+    if not flushed:
+        logger.error("Judgment flush timed out after completed wrapper task")
+        # Do not call this turn restart-safe until stored evidence arrives.
+    return result.reply
+```
+
+Replace the generic names and types. Preserve the first-turn late session-ID
+assignment and the root-then-flush ordering.
+
 For a deliberate restart test, do not restart the wrapper until that completion
 barrier succeeds or the export failure has been recorded as blocking the
 verification. Then prove from stored data that the last completed pre-restart

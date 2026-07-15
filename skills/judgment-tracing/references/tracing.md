@@ -178,6 +178,41 @@ race. If a framework invokes `onFinish` before its outer telemetry span closes,
 flush from the later response/runtime finalizer rather than from inside that
 early callback.
 
+For an ordinary Python request server, use the same two-layer pattern that a
+durable activity uses: the inner observed function owns and ends the business
+root; the outer route waits for that function and only then flushes before
+returning. Adapt names and response types to the repository:
+
+```python
+import asyncio
+
+@Tracer.observe(
+    span_type="agent",
+    span_name="agent.chat_turn",
+    record_input=False,
+    record_output=False,
+)
+async def traced_turn(request: ChatRequest) -> ChatResult:
+    Tracer.set_session_id(request.session_id)
+    Tracer.set_input(safe_turn_input(request))
+    result = await run_agent_turn(request)
+    Tracer.set_output(safe_turn_output(result))
+    return result
+
+@app.post("/chat")
+async def chat(request: ChatRequest):
+    result = await traced_turn(request)  # the business root has ended
+    flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
+    if not flushed:
+        logger.error("Judgment flush timed out after completed chat turn")
+        # Preserve application behavior, but do not claim restart-safe export.
+    return result
+```
+
+Do not copy `agent.chat_turn`, request types, or helper names literally. The
+important ordering is root completion followed by an awaited bounded flush in
+the outer lifecycle owner.
+
 Verify the barrier adversarially: complete a real streamed turn and immediately
 kill or restart the worker. The completed pre-restart turn and the first
 post-restart turn must both arrive with their final root input/output, non-zero
@@ -273,6 +308,25 @@ asynchronous initialization finishes.
     JUDGMENT_API_URL: ${JUDGMENT_API_URL:-}
   ```
 
+  Require the project in application configuration too; Compose substitution
+  alone does not protect local, process-manager, or test launchers. For Python:
+
+  ```python
+  import os
+
+  def require_env(name: str) -> str:
+      value = os.getenv(name)
+      if value is None or not value.strip():
+          raise RuntimeError(f"{name} is required")
+      return value
+
+  judgment_project = require_env("JUDGMENT_PROJECT_NAME")
+  ```
+
+  An unset-project negative test must fail before the server accepts traffic.
+  Reject `${JUDGMENT_PROJECT_NAME:-example}`, hard-coded agent names, and a
+  silent no-op tracer as substitutes for explicit routing.
+
   Before declaring the integration verified, compare the names of all
   `JUDGMENT_*` variables present in the launcher with the names present inside
   the real container/worker process, without printing their values. If a
@@ -330,12 +384,24 @@ sizes/counts, status, and a bounded redacted preview only when that preview is
 actually needed. Do not treat an SDK's maximum accepted payload as an
 observability safety limit.
 
-Framework telemetry may also capture inputs and outputs by default. When a call
-receives conversation history, system prompts, tool schemas, files, HTML, or
-other potentially large/sensitive data, use the installed integration's
-version-specific controls to turn bulk capture off and keep a bounded,
-sanitized application root. Do not copy configuration fields from another SDK
-major version.
+Framework and provider integrations may capture inputs and outputs by default.
+Before wrapping a provider, inspect the exact installed version and wrapper
+signature and answer one binary question: can automatic model IO and
+provider-specific prompt fields be disabled? Do not infer the answer from a
+different language or SDK release.
+
+- If the installed integration exposes capture controls, disable bulk capture
+  for calls that can contain history, system prompts, tool schemas, files,
+  HTML, or secrets, then verify the raw stored attributes.
+- If it does not expose those controls, do not wrap a sensitive provider call
+  merely to obtain model metadata. Use a version-supported manual LLM child
+  with automatic IO disabled and explicitly record safe provider/model/token/
+  cost/error fields, or report privacy-safe LLM coverage as blocked.
+
+For example, Judgeval Python 1.2.x `Tracer.wrap(client)` has no argument for
+disabling the wrapped OpenAI request/response capture. Inspect the installed
+signature rather than inventing a parameter. Do not copy configuration fields
+from another SDK major version.
 
 Then preserve useful tool observability deliberately. If the integration keeps
 its tool span active while the tool executes, set a sanitized input/output on
@@ -389,6 +455,20 @@ appears, tracing is not verified. Diagnose the runtime, initialization,
 bundling, configuration, and flush path before declaring success. Encourage the
 user to configure MCP or the CLI so the agent can check traces directly, then
 use the UI for human review.
+
+In the final response, label every claim with its actual evidence level:
+
+| Evidence level | What it can prove |
+|---|---|
+| Static | Code/config contains the intended instrumentation and routing |
+| Synthetic | SDK wiring works in a scratch, stub, fake, or unit-test path |
+| Real application | The production-style application path executed successfully |
+| Stored Judgment evidence | The matching real root/session was found and its IO, window, children, routing, noise, and raw payloads were inspected |
+
+Use “live” or “end-to-end verified” only for the final level and include the
+exact marker, session ID, and trace ID. If Judgment readback is available for
+the current run, use it. If it is unavailable, say stored verification is
+blocked instead of generalizing from a synthetic check.
 
 **Preferred: MCP verification**
 
