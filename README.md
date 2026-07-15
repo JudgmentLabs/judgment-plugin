@@ -6,9 +6,10 @@ One repo, installable in both Claude Code and OpenAI Codex, bundling:
 1. **The Judgment MCP server** (`https://mcp.judgmentlabs.ai`): query traces,
    sessions, behaviors, judges, prompts, datasets, tests, automations, and
    agent memory directly from your editor.
-2. **The `judgment-tracing` skill**: best-practice guidance for instrumenting
-   apps with tracing, writing evaluations, building code judges, and running
-   offline agent tests.
+2. **The `judgment-tracing` skill router plus focused tracing skills**:
+   repository-aware guidance for request/response agents, durable workflows,
+   streamed/serverless turns, checkpointed loops, and persistent agent CLI
+   wrappers, alongside evaluations, code judges, and offline agent tests.
 3. **The `mcp-server-best-practices` skill**: usage patterns for the Judgment
    MCP itself (search_traces batching, filter reference, fan-out queries).
 
@@ -129,7 +130,12 @@ judgment-plugin/
 ├── .mcp.json                # the Judgment MCP server (shared by both agents)
 ├── assets/                  # Judgment logo and composer icon
 └── skills/
-    ├── judgment-tracing/
+    ├── judgment-tracing/                    # general entry point and router
+    ├── judgment-tracing-request-response/
+    ├── judgment-tracing-durable-workflows/
+    ├── judgment-tracing-streaming-serverless/
+    ├── judgment-tracing-checkpointed-loops/
+    ├── judgment-tracing-cli-wrappers/
     └── mcp-server-best-practices/
 ```
 
