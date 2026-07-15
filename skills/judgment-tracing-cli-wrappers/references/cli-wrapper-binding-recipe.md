@@ -81,8 +81,11 @@ classification belong inside the guarded callback, and the reporter must not
 raise:
 
 ```python
-from collections.abc import Callable, Iterator
+import asyncio
+import threading
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
+from opentelemetry.context import Context
 from opentelemetry.trace import Span, Status, StatusCode
 
 def report_telemetry_failure(label: str, error: Exception) -> None:
@@ -97,29 +100,73 @@ def trace_only(label: str, write: Callable[[], None]) -> None:
     except Exception as error:
         report_telemetry_failure(label, error)
 
-def mark_span_error(span: Span | None, code: str, output: dict) -> None:
-    # `code` is allowlisted; output excludes exception text, stderr, and commands.
+def safe_trace_error_code(
+    label: str,
+    error: Exception,
+    classifier: Callable[[Exception], str],
+    allowed_codes: frozenset[str],
+    default: str = "unexpected_application_error",
+) -> str:
+    selected = default
+
+    def classify() -> None:
+        nonlocal selected
+        candidate = classifier(error)
+        if candidate in allowed_codes:
+            selected = candidate
+
+    # Classification changes trace evidence only. A classifier fault uses the
+    # fixed safe fallback and never changes the real exception/response.
+    trace_only(label, classify)
+    return selected
+
+def mark_span_error(
+    span: Span | None,
+    code: str,
+    raw_fields: Mapping[str, object],
+) -> None:
+    # `code` is allowlisted. `set_safe_trace_error_output`, defined in the
+    # payload section, performs field access, fixed error overlay, projection,
+    # sanitization, bounding, and set_output in one guarded thunk.
     if span is None:
         return
-    trace_only(
-        f"{code}:output",
-        lambda: Tracer.set_output({**output, "ok": False, "error_code": code}),
-    )
+    set_safe_trace_error_output(f"{code}:output", raw_fields, code)
     trace_only(
         f"{code}:status",
         lambda: span.set_status(Status(StatusCode.ERROR, code)),
     )
 
-def flush_tracing(timeout_ms: int) -> bool:
+_FLUSH_SINGLE_FLIGHT = threading.Lock()
+
+async def flush_tracing_with_deadline(deadline_ms: int) -> bool:
+    def flush_and_report() -> bool:
+        # A timed-out worker cannot be killed. Keep at most one actual exporter
+        # call alive so repeated wrapper requests cannot exhaust worker threads.
+        if not _FLUSH_SINGLE_FLIGHT.acquire(blocking=False):
+            report_telemetry_failure("flush busy", RuntimeError())
+            return False
+        try:
+            exported = bool(Tracer.force_flush(deadline_ms))
+            if not exported:
+                report_telemetry_failure("flush", TimeoutError())
+            return exported
+        except Exception as error:
+            report_telemetry_failure("flush", error)
+            return False
+        finally:
+            _FLUSH_SINGLE_FLIGHT.release()
+
     try:
-        exported = Tracer.force_flush(timeout_ms)
+        return await asyncio.wait_for(
+            asyncio.to_thread(flush_and_report),
+            timeout=deadline_ms / 1_000,
+        )
+    except TimeoutError as error:
+        report_telemetry_failure("flush deadline", error)
+        return False
     except Exception as error:
-        report_telemetry_failure("flush", error)
+        report_telemetry_failure("flush scheduling", error)
         return False
-    if not exported:
-        report_telemetry_failure("flush", TimeoutError())
-        return False
-    return True
 
 @contextmanager
 def optional_trace_scope(
@@ -149,6 +196,24 @@ def optional_trace_scope(
             report_telemetry_failure(f"{label}:exit", error)
 ```
 
+Choose the root scope explicitly at the call site. In the ordinary mode with no
+deliberate upstream W3C parent, pass a starter that uses the exact Judgment
+runtime's public OTel tracer with an empty `Context()`:
+
+```python
+lambda: Tracer.getOTELTracer().start_as_current_span(
+    "application.wrapper_turn",
+    context=Context(),
+)
+```
+
+If the application intentionally continues an upstream distributed trace, enter
+the installed public `Tracer.continue_trace(carrier)` scope and instead start
+the business root with that current context. Pin and executable-test the exact
+Judgeval/OpenTelemetry versions and prove raw IDs in both modes. Never let an
+ambient ASGI/HTTP span choose parentage implicitly; if the installed public API
+cannot express the intended policy, root parentage remains `blocked`.
+
 Apply `trace_only(...)` to input, output, attributes, session assignment,
 span-kind/status, finalization, and flush reporting. A direct `Tracer.set_*`
 call in business code is a static completion failure. The adapter wraps only
@@ -168,18 +233,54 @@ never let a global/current-span setter fall through to the still-active parent.
 The child start/enter fault tests must prove the CLI runs once and the parent
 root's input/output/session are not overwritten by attempted child evidence.
 
+Span names do not imply span kinds. Immediately after the wrapper root becomes
+current, use guarded public SDK setters to record the canonical `agent` kind and
+the honest wrapper-only coverage label. Immediately after `agent_cli.invoke`
+becomes current, guardedly record the canonical `tool` kind. Keep these writes
+inside their owning scopes so a missing child can never relabel the root:
+
+```python
+if root_span is not None:
+    trace_only("wrapper-root:span-kind", lambda: Tracer.set_span_kind("agent"))
+    trace_only(
+        "wrapper-root:coverage",
+        lambda: Tracer.set_attributes(
+            {"instrumentation.coverage": "wrapper_only"}
+        ),
+    )
+
+# Run only while the aggregate CLI child is current.
+if cli_span is not None:
+    trace_only("cli-child:span-kind", lambda: Tracer.set_span_kind("tool"))
+```
+
+If either optional scope yields `None`, skip every setter for that scope. A
+global/current-span setter must never fall through to an upstream span or from
+a missing CLI child to the still-current wrapper root.
+
+`instrumentation.coverage` is an app-defined disclosure, not a claim that
+Judgment automatically inferred coverage. Use `wrapper_only` when the only
+inner evidence is the aggregate subprocess call. If real linked or nested
+records are later added, replace the label with the precisely documented level
+rather than leaving a false wrapper-only or full-coverage claim.
+
 Use this ordering for the single root path:
 
-1. start the root and, if needed, guardedly set metadata-only safe IDs;
+1. start the root, guardedly set `span_kind=agent` and
+   `instrumentation.coverage=wrapper_only`, and, if needed, guardedly set
+   metadata-only safe IDs;
 2. validate the wrapper session exactly once;
 3. after success, guardedly sanitize/bound/set the prompt;
-4. invoke and validate the CLI child, then persist its returned mapping/turn;
+4. start the aggregate CLI child, guardedly set `span_kind=tool`, invoke and
+   validate the CLI once, then persist its returned mapping/turn;
 5. construct the real response, then guardedly record success;
 6. on any business exception, classify it while the owning span is current,
    mark the root as the table below requires, retain the original exception in
    memory, and rethrow only after the root ends; and
-7. call `flush_tracing(...)` outside the root without changing the saved
-   result/error.
+7. await `flush_tracing_with_deadline(...)` outside the root without changing
+   the saved result/error. Choose the deadline from the wrapper's declared
+   latency budget; 500 ms is only an upper-bound example for a user-visible
+   route.
 
 | Failure site | Wrapper root | `agent_cli.invoke` child |
 | --- | --- | --- |
@@ -194,8 +295,9 @@ Use this ordering for the single root path:
 
 Then enforce these rules:
 
-1. Guard trace setters, sanitizers/classifiers, reporters, finalization, and
-   flush reporting. Telemetry failure must not alter application behavior.
+1. Guard trace setters, root and child sanitizers/classifiers independently,
+   reporters, finalization, and flush reporting. Telemetry failure must not
+   alter application behavior.
 2. Run existing session validation, CLI invocation, parsing, persistence, and
    response construction once.
 3. Record success only after mapping/persistence and the actual reply succeed.
@@ -223,6 +325,23 @@ trace-setter failure outside `trace_only` can trigger SDK automatic exception
 capture and leak its message/stack; that is a telemetry fail-open and payload
 safety failure.
 
+This tempting ordering is forbidden because the sanitizer/classifier can raise
+before the guard and replace a real CLI result or application exception:
+
+```python
+# FORBIDDEN: trace-only work is precomputed on the business path.
+safe_output = bound_trace_payload(redact_auth(project_trace_output(raw_fields)))
+code = classify_error(application_error)
+mark_span_error(root_span, code, safe_output)
+```
+
+Pass raw business fields to `set_safe_trace_output(...)` or
+`mark_span_error(...)`; projection, sanitization, bounding, and `set_output`
+must all execute inside that helper's `trace_only` thunk. Select the allowlisted
+root or child code through `safe_trace_error_code(...)`, with distinct labels
+such as `wrapper-root:classifier` and `cli-child:classifier`, rather than
+calling a telemetry classifier on the business path.
+
 ## 4. Configure routing and payload policy
 
 - Require an explicit project before serving. For Judgeval Python 1.2, inspect
@@ -249,23 +368,44 @@ safety failure.
 
 Choose an approved sanitizer, a conservative credential/auth baseline that
 requires privacy review, or strict omission that blocks prompt/reply usefulness.
-Sanitize before bounding, leave storage-clipping margin, and prove settled
-`judgment.input`/`judgment.output` still parse as the intended structure.
+Project allowlisted business fields first, recursively redact that structure,
+then serialize and bound each trace input/output to **at most 1,500 UTF-8
+bytes**. This leaves margin below the roughly 2,000-byte clipping boundary
+observed in stored platform payloads; the previous 4,000-character application
+bound was therefore not protective. If a payload is clipped, store a parseable
+object containing
+`_judgment_truncation.truncated=true`; never slice serialized JSON into an
+invalid fragment. Prove settled `judgment.input`/`judgment.output` remain
+parseable and within the same 1,500-byte bound.
+
 Exercise a benign semantic marker plus non-real OpenAI-style `sk-`, GitHub-style
 `ghp_`/`github_pat_`, provider/API keys, prefixed assignments such as
 `JUDGMENT_API_KEY=` and `AWS_SECRET_ACCESS_KEY=`, cookies/sessions,
-URL credentials, and private keys before/beyond the bound and in reply/error
-paths. Authorization redaction must anchor on the header name and remove every
-scheme, including `Authorization: ApiKey ...`, `Authorization: Digest ...`,
-and `Proxy-Authorization: Custom ...`; a Bearer/Basic-only matcher fails. Do not
-run one greedy header regex over serialized JSON. Redact exact structured keys
-before serialization and line-form headers one line at a time. A conservative
-Python baseline may include:
+URL credentials, private keys, loose `Bearer ...` / `Basic ...` values, and
+camelCase assignments such as `httpAuthorization=Basic ...` before/beyond the
+bound and in reply/error paths. Authorization redaction must anchor on the
+header name and remove every scheme, including `Authorization: ApiKey ...`,
+`Authorization: Digest ...`, and `Proxy-Authorization: Custom ...`; matching
+only header-form Bearer/Basic fails because standalone values leak too. Do not
+run one greedy header regex over serialized JSON. Redact structured keys before
+serialization. Remove multiline private-key blocks and standalone credential
+tokens before any greedy line/header rule. A key/value matcher must consume a
+`Basic` or `Bearer` scheme and its token atomically so the token is not left
+behind. A conservative Python baseline may include:
 
 ```python
 import json
+import math
 import re
+from collections.abc import Mapping
 from urllib.parse import unquote_plus
+
+TRACE_PAYLOAD_MAX_BYTES = 1_500
+TRACE_INPUT_FIELDS = ("prompt", "wrapper_id", "mode", "resume")
+TRACE_OUTPUT_FIELDS = (
+    "ok", "result", "reply", "error_code", "mode", "resume", "exit_code",
+    "duration_ms",
+)
 
 EXACT_SECRET_KEYS = {
     "authorization", "proxy_authorization", "http_authorization",
@@ -288,6 +428,18 @@ def is_secret_key(key: object) -> bool:
         for suffix in SECRET_KEY_SUFFIXES
     )
 
+PRIVATE_KEY_RE = re.compile(
+    r'''-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----'''
+)
+STANDALONE_TOKEN_RULES = (
+    re.compile(r'''\bsk-[A-Za-z0-9_-]{10,}\b'''),
+    re.compile(r'''\bghp_[A-Za-z0-9]{10,}\b'''),
+    re.compile(r'''\bgithub_pat_[A-Za-z0-9_]{10,}\b'''),
+    re.compile(r'''\bxox[baprs]-[A-Za-z0-9-]{8,}\b'''),
+)
+STANDALONE_AUTH_VALUE_RE = re.compile(
+    r'''(?i)\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+'''
+)
 AUTH_LINE_RE = re.compile(
     r"(?im)^(?P<label>[ \t]*(?:proxy-)?authorization[ \t]*:[ \t]*).*?$"
 )
@@ -309,24 +461,71 @@ QUOTED_SENSITIVE_HEADER_RE = re.compile(
 INLINE_SENSITIVE_HEADER_RE = re.compile(
     r'''(?i)(?P<label>(?:(?:proxy-)?authorization|(?:set-)?cookie)\s*:\s*)(?!\s*\[REDACTED\])[^\r\n]*'''
 )
-KEY_VALUE_RE = re.compile(
-    r'''(?im)(?P<label>(?P<quote>["']?)(?P<key>[A-Za-z][A-Za-z0-9_-]*)(?P=quote)\s*[:=](?!\s*\[REDACTED\])\s*)(?P<value>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,&;}\]]+)'''
+KEY_LABEL_RE = re.compile(
+    r'''(?imx)
+    (?P<label>
+      (?P<quote>["']?)(?P<key>[A-Za-z][A-Za-z0-9_-]*)(?P=quote)
+      \s*[:=](?!\s*\[REDACTED\])\s*
+    )
+    '''
 )
 QUERY_PARAM_RE = re.compile(
     r"(?P<prefix>[?&#])(?P<key>[^?&=#\s]+)=(?P<value>[^&#\s]*)"
-)
-STANDALONE_SECRET_RULES = (
-    re.compile(r'''\b(?:sk-[A-Za-z0-9_-]{10,}|ghp_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,}|xox[baprs]-[A-Za-z0-9-]{8,})\b'''),
-    re.compile(r'''-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----'''),
 )
 URL_USERINFO_RE = re.compile(
     r'''(?P<scheme>\b[A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s:@]*:[^/\s@]+@'''
 )
 
-def redact_match(match: re.Match) -> str:
-    if not is_secret_key(match.group("key")):
-        return match.group(0)
-    return f'{match.group("label")}"[REDACTED]"'
+def redact_assignments(value: str) -> str:
+    """Redact secret assignments without trusting comma/semicolon boundaries."""
+    output: list[str] = []
+    copied_through = 0
+    search_from = 0
+
+    while match := KEY_LABEL_RE.search(value, search_from):
+        search_from = match.end()
+        if not is_secret_key(match.group("key")):
+            continue
+
+        value_start = match.end()
+        value_end = value_start
+        if value_start < len(value) and value[value_start] in {'"', "'"}:
+            quote = value[value_start]
+            value_end += 1
+            escaped = False
+            while value_end < len(value):
+                character = value[value_end]
+                value_end += 1
+                if not escaped and character == quote:
+                    break
+                if character == "\\" and not escaped:
+                    escaped = True
+                else:
+                    escaped = False
+        else:
+            auth_value = re.match(
+                r"(?i)(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+",
+                value[value_start:],
+            )
+            if auth_value:
+                value_end = value_start + auth_value.end()
+            else:
+                # Privacy wins over ambiguous no-space comma/semicolon/& tails.
+                # A later field needs whitespace to be independently preserved.
+                while (
+                    value_end < len(value)
+                    and not value[value_end].isspace()
+                    and value[value_end] not in "}]"
+                ):
+                    value_end += 1
+
+        output.append(value[copied_through:match.start()])
+        output.append(f'{match.group("label")}"[REDACTED]"')
+        copied_through = value_end
+        search_from = max(value_end, match.end())
+
+    output.append(value[copied_through:])
+    return "".join(output)
 
 def redact_query_param(match: re.Match) -> str:
     try:
@@ -343,6 +542,28 @@ def redact_quoted_header(match: re.Match) -> str:
         return f"{single_prefix}[REDACTED]'"
     return f'{match.group("double_prefix")}[REDACTED]"'
 
+def protect_quoted_sensitive_headers(value: str) -> tuple[str, dict[str, str]]:
+    """Protect sanitized quoted headers from overlapping generic regexes."""
+    sentinel_prefix = "\ue000judgment_header_"
+    while sentinel_prefix in value:
+        sentinel_prefix += "_"
+    replacements: dict[str, str] = {}
+
+    def protect(match: re.Match) -> str:
+        placeholder = f"{sentinel_prefix}{len(replacements)}\ue001"
+        replacements[placeholder] = redact_quoted_header(match)
+        return placeholder
+
+    return QUOTED_SENSITIVE_HEADER_RE.sub(protect, value), replacements
+
+def restore_quoted_sensitive_headers(
+    value: str,
+    replacements: Mapping[str, str],
+) -> str:
+    for placeholder, sanitized_header in replacements.items():
+        value = value.replace(placeholder, sanitized_header)
+    return value
+
 def redact_auth(value):
     if isinstance(value, dict):
         return {
@@ -351,7 +572,7 @@ def redact_auth(value):
             else redact_auth(item)
             for key, item in value.items()
         }
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [redact_auth(item) for item in value]
     if isinstance(value, str):
         stripped = value.lstrip()
@@ -360,29 +581,177 @@ def redact_auth(value):
                 return json.dumps(redact_auth(json.loads(value)), separators=(",", ":"))
             except (TypeError, ValueError):
                 pass
+        # Multiline and standalone secrets must be removed before the greedy
+        # line/header rules below can consume their delimiters or leave tails.
+        redacted = PRIVATE_KEY_RE.sub("[REDACTED]", value)
+        redacted, quoted_headers = protect_quoted_sensitive_headers(redacted)
+        for pattern in STANDALONE_TOKEN_RULES:
+            redacted = pattern.sub("[REDACTED]", redacted)
         # Redact full-URL query values before the generic key/value pattern can
         # treat `https:` as one harmless assignment and consume the query.
-        redacted = QUERY_PARAM_RE.sub(redact_query_param, value)
-        redacted = QUOTED_SENSITIVE_HEADER_RE.sub(redact_quoted_header, redacted)
+        redacted = QUERY_PARAM_RE.sub(redact_query_param, redacted)
+        # Secret assignment values consume their full ambiguous unquoted token
+        # so comma/semicolon tails cannot leak after a partial match.
+        redacted = redact_assignments(redacted)
+        redacted = STANDALONE_AUTH_VALUE_RE.sub("[REDACTED]", redacted)
         # Unquoted inline shell-header boundaries are ambiguous, so remove the
         # remainder of that line conservatively.
         redacted = INLINE_SENSITIVE_HEADER_RE.sub(r"\g<label>[REDACTED]", redacted)
-        redacted = KEY_VALUE_RE.sub(redact_match, redacted)
         redacted = AUTH_LINE_RE.sub(r"\g<label>[REDACTED]", redacted)
         redacted = AUTH_ENV_LINE_RE.sub(r"\g<label>[REDACTED]", redacted)
         redacted = COOKIE_LINE_RE.sub(r"\g<label>[REDACTED]", redacted)
         redacted = URL_USERINFO_RE.sub(r"\g<scheme>[REDACTED]@", redacted)
-        for pattern in STANDALONE_SECRET_RULES:
-            redacted = pattern.sub("[REDACTED]", redacted)
-        return redacted
+        return restore_quoted_sensitive_headers(redacted, quoted_headers)
     return value
+
+def canonicalize_trace_value(value: object) -> object:
+    """Project arbitrary values into the exact JSON-safe domain we store."""
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        # Replace lone surrogates so the installed UTF-8/orjson serializer
+        # cannot fall back to Python repr.
+        return value.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(value, int):
+        # Judgeval 1.2's serializer uses orjson. Keep a conservative signed
+        # 64-bit interoperable domain and stringify larger values before the
+        # installed serializer can reject them or another consumer loses them.
+        return value if -(2**63) <= value <= 2**63 - 1 else str(value)
+    if isinstance(value, float):
+        return value if math.isfinite(value) else "[non_finite_number]"
+    if isinstance(value, Mapping):
+        # Projectors define string field names. Drop unexpected key types rather
+        # than invoking arbitrary __str__ code in telemetry.
+        return {
+            key: canonicalize_trace_value(item)
+            for key, item in value.items()
+            if isinstance(key, str)
+        }
+    if isinstance(value, (list, tuple)):
+        return [canonicalize_trace_value(item) for item in value]
+    return "[unsupported_type]"
+
+def project_trace_input(raw_fields: Mapping[str, object]) -> dict:
+    return {
+        key: raw_fields[key]
+        for key in TRACE_INPUT_FIELDS
+        if key in raw_fields
+    }
+
+def project_trace_output(raw_fields: Mapping[str, object]) -> dict:
+    # stderr, command, environment, raw exception, transcript, and session_id
+    # are deliberately absent. Set the approved CLI session separately.
+    return {
+        key: raw_fields[key]
+        for key in TRACE_OUTPUT_FIELDS
+        if key in raw_fields
+    }
+
+def serialized_size(value: object) -> int:
+    return len(
+        json.dumps(
+            value,
+            ensure_ascii=True,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+
+def bound_trace_payload(payload: dict) -> dict:
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(",", ":"),
+    )
+    original_bytes = len(serialized.encode("utf-8"))
+    if original_bytes <= TRACE_PAYLOAD_MAX_BYTES:
+        return payload
+
+    summary = {
+        key: payload[key]
+        for key in ("ok", "error_code", "mode", "resume", "exit_code")
+        if key in payload and (
+            payload[key] is None
+            or isinstance(payload[key], bool)
+            or (
+                isinstance(payload[key], int)
+                and not isinstance(payload[key], bool)
+                and -1_000_000_000 <= payload[key] <= 1_000_000_000
+            )
+            or (isinstance(payload[key], str) and len(payload[key]) <= 64)
+        )
+    }
+    marker = {
+        "truncated": True,
+        "original_bytes": original_bytes,
+        "max_bytes": TRACE_PAYLOAD_MAX_BYTES,
+    }
+
+    # Binary-search a sanitized serialized preview while preserving valid JSON.
+    low, high = 0, len(serialized)
+    bounded = {**summary, "_judgment_truncation": marker, "preview": ""}
+    while low <= high:
+        midpoint = (low + high) // 2
+        candidate = {
+            **summary,
+            "_judgment_truncation": marker,
+            "preview": serialized[:midpoint],
+        }
+        if serialized_size(candidate) <= TRACE_PAYLOAD_MAX_BYTES:
+            bounded = candidate
+            low = midpoint + 1
+        else:
+            high = midpoint - 1
+    return bounded
+
+def set_safe_trace_input(label: str, raw_fields: Mapping[str, object]) -> None:
+    def write() -> None:
+        projected = project_trace_input(raw_fields)
+        canonical = canonicalize_trace_value(projected)
+        sanitized = redact_auth(canonical)
+        bounded = bound_trace_payload(sanitized)
+        Tracer.set_input(bounded)
+
+    trace_only(label, write)
+
+def set_safe_trace_output(label: str, raw_fields: Mapping[str, object]) -> None:
+    def write() -> None:
+        # Every trace-only operation, including set_output itself, stays inside
+        # this guarded thunk. None of these values drive business behavior.
+        projected = project_trace_output(raw_fields)
+        canonical = canonicalize_trace_value(projected)
+        sanitized = redact_auth(canonical)
+        bounded = bound_trace_payload(sanitized)
+        Tracer.set_output(bounded)
+
+    trace_only(label, write)
+
+def set_safe_trace_error_output(
+    label: str,
+    raw_fields: Mapping[str, object],
+    code: str,
+) -> None:
+    def write() -> None:
+        # Even Mapping iteration/access stays inside the guard: a lazy or
+        # hostile mapping is telemetry input and cannot break the business path.
+        projected = project_trace_output(raw_fields)
+        projected.update({"ok": False, "error_code": code})
+        canonical = canonicalize_trace_value(projected)
+        sanitized = redact_auth(canonical)
+        bounded = bound_trace_payload(sanitized)
+        Tracer.set_output(bounded)
+
+    trace_only(label, write)
 ```
 
 Search settled raw roots, CLI/inner children, events, and resource attributes
-before and after restart. The marker survives; all canaries, raw
+before and after restart. The benign marker survives; all canaries, raw
 commands/stderr/environments, unapproved files, histories, schemas, and
-transcripts are absent. This conservative baseline is not general PII/DLP.
-The mandatory regex/helper matrix includes comma-bearing values such as
+transcripts are absent. Every stored input/output is valid JSON no larger than
+1,500 serialized bytes, and a clipped value still contains the parseable
+`_judgment_truncation` object. This conservative baseline is not general
+PII/DLP. The mandatory regex/helper matrix includes comma-bearing values such as
 `Authorization: Digest username=x, realm=y, nonce=z`, serialized
 `{"Authorization":"Digest username=x, realm=y"}`, and
 `PASSWORD="abc,def"`, structured and serialized `JUDGMENT_API_KEY` /
@@ -401,6 +770,36 @@ Cookie values containing single-quoted fields while the adjacent URL survives,
 private-key blocks, plus adjacent benign fields that must survive. A policy-approved
 business `session_id` is deliberately separate and is set through
 `Tracer.set_session_id`, not copied through this payload sanitizer.
+
+In addition to the individual cases, run these exact composed regressions. For
+each one, assert the named secret canaries are absent from the returned value
+and its serialized form, every `SURVIVES_*` marker remains, and repeated
+sanitization is idempotent:
+
+| Fixture | Required result |
+| --- | --- |
+| `Bearer STANDALONE_BEARER_CANARY_0123456789 SURVIVES_LOOSE_BEARER` | the full scheme/token becomes `[REDACTED]`; `SURVIVES_LOOSE_BEARER` remains |
+| `Basic QkFTSUNfQ0FOQVJZXzEyMzQ1Njc4OTA= SURVIVES_LOOSE_BASIC` | the full scheme/token becomes `[REDACTED]`; `SURVIVES_LOOSE_BASIC` remains |
+| `httpAuthorization=Basic Q0FNRUxDQVNFX0JBU0lDX0NBTkFSWV8xMjM0NTY= benign=SURVIVES_CAMEL` | the camelCase key normalizes to `http_authorization`, the scheme and token are consumed atomically, and `benign=SURVIVES_CAMEL` remains |
+| `PASSWORD=PASSWORD_CANARY,SECOND SURVIVES_PASSWORD_TAIL` | the complete ambiguous unquoted token, including `,SECOND`, disappears and `SURVIVES_PASSWORD_TAIL` remains |
+| `PASSWORD=PASSWORD_CANARY,SECOND=NO SURVIVES_ASSIGNMENT_SHAPED_TAIL` | the assignment-shaped secret tail disappears and `SURVIVES_ASSIGNMENT_SHAPED_TAIL` remains |
+| `BENIGN=SURVIVES,PASSWORD=LATER_PASSWORD_CANARY` | `BENIGN=SURVIVES,` remains and the later secret assignment is redacted |
+| `FOO=x;JUDGMENT_API_KEY=LATER_API_KEY_CANARY` | `FOO=x;` remains and the later API-key assignment is redacted |
+| `SURVIVES_BEFORE\n-----BEGIN PRIVATE KEY-----\nPRIVATE_KEY_CANARY\nAuthorization: Bearer NESTED_AUTH_CANARY_1234567890\n-----END PRIVATE KEY-----\nSURVIVES_AFTER` | the complete multiline block and nested auth canary disappear before line/header processing; both survival markers remain |
+| `curl -H 'Authorization: Digest username=CANARY, realm=CANARY2' https://benign.example/SURVIVES_URL ; github_pat_COMPOSED_CANARY_1234567890 ; https://example.test/?api_key=QUERY_CANARY&benign=SURVIVES_QUERY` | all three credential categories disappear; the benign URL and query marker remain |
+| `{"ok": True, "result": "SURVIVES_BOUND" + ("x" * 2_100) + " sk-BOUNDARYCANARY1234567890 " + ("y" * 2_900)}` | the canary is removed before bounding, serialized output is `<= 1_500` bytes, JSON parsing succeeds, `_judgment_truncation.truncated` is `true`, and `SURVIVES_BOUND` remains in the sanitized preview |
+
+Also inject the root sanitizer, root classifier, CLI-child sanitizer, and
+CLI-child classifier separately. Each injection must leave the real
+CLI/business path single-run with the same transport/result behavior. A child
+fault must not invoke a global current-span write after its scope is absent or
+overwrite root input/output/status.
+
+Include a `Mapping` whose iterator or item access raises and pass it to both the
+success and error output helpers. The telemetry failure is reported, no trace
+output is written for that injection, and the already-determined application
+result/exception and transport behavior remain identical. This catches a field
+merge such as `{**raw_fields, ...}` accidentally moving back outside the guard.
 
 ## 5. Bind inner evidence only when real
 
@@ -429,9 +828,10 @@ malformed output; missing result; missing first-turn CLI session; returned-ID
 mapping persistence; turn persistence; response serialization when injectable;
 an unexpected pre/post-CLI application failure; wrapper-root scope start, enter,
 and exit; CLI-child scope start, enter, and exit; every
-input/output/session/attribute/status setter; sanitizer; classifier; reporter;
-finalizer; synchronous flush throw; async flush rejection where applicable;
-flush timeout; and every payload-canary category.
+input/output/session/attribute/span-kind/status setter; root sanitizer; root
+classifier; CLI-child sanitizer; CLI-child classifier; reporter; finalizer;
+synchronous flush throw; async flush rejection where applicable; flush timeout;
+and every payload-canary category, including the exact composed fixtures above.
 Record one injection and result per subcase; never pass a group because one
 member passed. An untriggered subcase is `blocked`. Also run the
 supported fake/degraded mode across a real process restart: roots must be valid
@@ -451,6 +851,9 @@ Reconcile recorded requests/results with settled raw Judgment data and require:
 
 - exactly one finalized nonzero-duration business root per real task, with
   truthful prompt/reply or normalized error and no read/health roots;
+- raw root `span_kind=agent`, aggregate CLI-child `span_kind=tool`, and
+  app-defined root `instrumentation.coverage=wrapper_only` for the wrapper
+  baseline; a span name containing `agent` or `tool` is not evidence;
 - exact returned/resumed CLI session IDs group the right turns across restart
   while independent sessions remain separate;
 - normalized raw start/end arithmetic proves CLI/inner children show honest
@@ -463,8 +866,10 @@ Reconcile recorded requests/results with settled raw Judgment data and require:
   root parent only when no deliberate upstream distributed context exists;
 - exact project/endpoint routing, the valid-target positive control, and both
   empty and same-type unknown-name/ID negatives pass without project creation;
-- payload canaries, semantic usefulness, and structured IO parseability pass
-  in raw attributes;
+- every individual and composed payload canary is absent, every named benign
+  marker survives, and each raw structured input/output parses, is no larger
+  than 1,500 serialized UTF-8 bytes, and carries a parseable
+  `_judgment_truncation` marker when clipped;
 - last pre-restart and first post-restart roots survive bounded post-root flush;
   and
 - every claimed inner LLM/tool/subagent has actual raw trace/span/link evidence.

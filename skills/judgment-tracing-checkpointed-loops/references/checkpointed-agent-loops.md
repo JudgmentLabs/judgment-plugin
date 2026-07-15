@@ -48,6 +48,19 @@ stored iteration must be parentless and have a trace ID distinct from the
 start/resume request. Preserve deliberate upstream continuity as a link rather
 than a parent. API syntax is not parentage proof.
 
+Use documented public span APIs only and choose kind from the represented work.
+A root that actually performs an agent decision/phase is
+`span_kind=agent`; orchestration, checkpoint/control, start/resume, and
+bookkeeping roots are `span_kind=function` (or the pinned SDK's named
+documented general equivalent). Real model children are `span_kind=llm`, and
+executed business tools are `span_kind=tool`. Keep every active-span lookup,
+rename, type/kind setter, sanitizer, and trace mutation that the implementation
+actually uses inside its fail-open callback. Fault-inject active-span lookup,
+rename, and a manual type/kind setter only when that call exists; do not add one
+to satisfy the matrix, and mark an absent operation `not-applicable`.
+Private/underscored APIs are forbidden unless the exact SDK version is pinned
+and a production-shaped executable conformance test proves that call.
+
 ## Model and tool children
 
 Use this section when provider metadata, active tool spans, or manual privacy
@@ -63,6 +76,8 @@ fallbacks remain ambiguous.
 - Use one child per executed business tool with stable name and bounded semantic
   input/output-or-error. Do not add a generic wrapper plus a duplicate business
   span.
+- Inspect the raw stored kind for each root/model/tool span; a descriptive name
+  or generic OpenTelemetry kind is not Judgment type evidence.
 - Sanitize the final composed query, URL, plan, input summary, and result—not
   only their ingredients—and do not retain an unbounded duplicate.
 
@@ -72,6 +87,13 @@ cookie/session, secret-assignment, URL-credential, and private-key canaries in
 model/tool error, compaction, final output, and beyond-bound positions where
 those branches exist. Search all settled raw attributes after restart and
 prove serialized structured root IO remains parseable.
+Include standalone `Bearer STANDALONE_BEARER_CANARY_0123456789`, standalone
+`Basic QkFTSUNfQ0FOQVJZXzEyMzQ1Njc4OTA=`, and a multiline private-key block
+containing an authorization line. Structure-first redaction must remove the
+whole key block and standalone auth values before greedy composed-text rules.
+Adjacent benign markers survive. Each serialized IO attribute is at most 1,500
+UTF-8 bytes, or a lower documented destination limit, and remains valid JSON
+with an explicit truncation marker when reduced.
 
 ## Export lifecycle
 
@@ -105,11 +127,22 @@ Use the real runtime and model:
 5. Reach its actual terminal branch; require compaction/retry only if present.
 6. Wait for ingestion and reconcile persisted completed iterations to raw roots.
 
+Run this scenario and all valid/empty/unknown routing controls through an exact
+ledger of the checked-in production launcher. Record its path/hash, command or
+Compose file/service, sanitized resolved env/project/endpoint wiring,
+readiness, and cleanup. If Compose is the deployed topology, host-only loop
+execution is diagnostic and cannot pass.
+
 Require one finalized root per persisted completed iteration, final semantic IO,
 complete model/tool windows, exact session continuity, contiguous iteration
 numbers, changed boot UUID with stable run ID, visible real branch outcomes,
 useful nonduplicated tools, honest LLM metadata, raw payload safety, and the last
 pre-kill root after bounded export.
+
+Behaviors, Judges, and Tests are supplemental only. Count one when its exact
+inspectable recorded result comes from this run and carries the matching
+iteration trace ID; definitions, enabled configuration, or aggregate scores
+without trace-linked current-run results do not count.
 
 ## Completion gate
 
@@ -120,11 +153,13 @@ Missing evidence is `blocked`. Compaction, finish, and retry are
 | --- | --- | --- | --- |
 | Durable unit | <result> | static | Function and save event used as the iteration root boundary |
 | Dependency integrity | <result> | static | Pre/post manifest and lockfile hashes/diff, frozen-lock install, and unchanged unrelated loop/runtime/provider versions |
+| Checked-in launcher/deployment ledger | <result> | static + real application | Checked-in path/hash, exact command or Compose file/service, sanitized resolved config/env wiring, readiness, cleanup, and same-topology positive/empty/unknown controls; no host-only substitute |
 | Routing startup and negatives | <result> | real application | Valid-target positive startup; empty and same-type unknown name/ID commands with expected errors/no readiness/no creation |
 | Exact stored destination | <result> | stored Judgment | Named settled trace/probe ID in the exact intended project, with resolved-ID equality or read-only resolution recorded as the routing mechanism |
 | Fresh roots | <result> | stored Judgment | Raw trace/span/empty-parent IDs distinct from start/resume |
 | Trace count | <result> | stored Judgment | Persisted iteration outcomes reconciled with finalized iteration roots; separately labeled attempt roots reconciled to durable attempt records |
 | Root evidence | <result> | stored Judgment | Bounded semantic IO and complete raw parent trees |
+| Judgment span kinds | <result> | stored Judgment | Raw roots that perform an agent decision/phase `span_kind=agent`; orchestration/checkpoint/control/start-resume/bookkeeping roots `span_kind=function` (or named documented general equivalent); real model children `span_kind=llm`; executed tool children `span_kind=tool`; documented public APIs only |
 | Strict child windows | <result> | stored Judgment | Evidence-derived timestamp precision, start/end margins for every complete iteration tree, and repeats for within-precision negatives |
 | Session continuity | <result> | stored Judgment | Exact run ID on every pre/post-restart root |
 | Restart survival | <result> | stored Judgment | Last pre-kill and first post-resume trace IDs |
@@ -134,10 +169,12 @@ Missing evidence is `blocked`. Compaction, finish, and retry are
 | Tool coverage | <result> | stored Judgment | One bounded semantic child per executed business tool |
 | Error/output status parity | <result> | stored Judgment | Every durably recorded unrecovered iteration/model/tool failure has matching fixed safe output and raw `ERROR` status; recovered parent outcomes remain truthful |
 | Entrypoints | <result> | stored Judgment | Separate start/resume trace IDs or genuine not-applicable reason |
-| Payload safety and usefulness | <result> | stored Judgment | Named mode, benign/canary raw search, bounds, parseable structured IO, and inspected fields |
+| Payload safety and usefulness | <result> | stored Judgment | Named mode/order, standalone Bearer/Basic and multiline-private-key fixtures, benign/canary raw search, each serialized IO attribute <=1,500 UTF-8 bytes or lower destination cap, parseable structured IO, and inspected fields |
 | Application behavior | <result> | real application | Persisted iterations and unchanged restart/retry/final-result behavior |
 | Export lifecycle | <result> | stored Judgment | Pre-kill root found after bounded post-root flush and restart |
 | Stored scenario proof | <result> | stored Judgment | Project, exact run session, trace IDs, and ledger reconciliation |
 | Ingestion settlement | <result> | stored Judgment | Post-flush raw-read timestamps and stable span-set hashes across the named interval; complete unchanged trees and terminal IO/status |
 | Test-export isolation | <result> | stored Judgment | Exact non-live commands/time window and named live-probe ledger; zero unit/stub/fake/build/typecheck/import/smoke/dev/static-generation roots in Monitoring |
-| Runtime telemetry fail-open (one result per subcase) | <result> | real application | Separate iteration and model/tool scope start/enter/exit, setter/status, sanitizer/classifier, finalizer, flush throw/rejection/timeout injections; model/action/save path once and unchanged |
+| Runtime telemetry fail-open (one result per applicable subcase) | <result> | real application | Separate iteration and model/tool scope start/enter/exit, IO/attribute/status setter, sanitizer/classifier, finalizer, reporter, and flush throw/rejection/timeout injections; active-span lookup, rename, and manual span-type/kind setter only when those calls exist; model/action/save path once and unchanged; absent operations are `not-applicable` |
+| Public SDK surface | <result> | static + real application | Pinned installed public API references and executable proof for span operations; no private/underscored call without its own pinned production-shaped conformance test |
+| Behavior/Judge/Test results (when cited) | <result> | stored Judgment | Exact inspectable current-run result IDs linked to iteration trace IDs; definitions/configuration/aggregate scores alone do not count |

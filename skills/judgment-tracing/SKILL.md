@@ -50,10 +50,10 @@ Follow these principles for all Judgment work:
     prove that it is the intended target, and a no-op tracer is still a routing
     failure. Compare the resolved identity with a pinned expected project ID or
     prove a uniquely named live probe settled in that exact project. After
-    startup, trace-only sanitizers, classifiers, setters, root
-    finalizers, reporters, and exporters must not prevent, repeat, or replace
-    application work. Their failure blocks verification and remains safely
-    observable.
+    startup, trace-only payload preparation, active-span lookups, setters
+    actually used, root finalizers, reporters, and exporters must not prevent,
+    repeat, or replace application work. Their failure blocks verification and
+    remains safely observable.
 12. **Keep non-live tooling offline**: start unit/stub/fake tests, builds,
     typechecks, static-import checks, smoke/dev launchers, and scratch probes in a fresh
     process with all export-capable Judgment/Judgeval/OTel credentials and
@@ -65,6 +65,16 @@ Follow these principles for all Judgment work:
     let dotenv refill them, clearing after SDK import is too late, and
     `setdefault` preserves a developer's live environment. Only named
     end-to-end probes may write to a shared Judgment project.
+13. **Validate the selected checked-in deployment, not a convenient
+    substitute**: make a launcher ledger before editing. Name the exact command
+    operators use for the scenario, every process/container that can export,
+    and where each required `JUDGMENT_*` value crosses that boundary. If that
+    selected topology uses Compose, Kubernetes, a process manager, or another
+    deployment manifest, a direct host-run server is useful diagnostic evidence
+    but cannot pass its launcher gate. Merely shipping an unused deployment
+    example does not force the test onto that example. Exercise the selected
+    production-style launcher in valid, explicitly empty, and unique-unknown
+    project modes.
 
 ## Mandatory Architecture Routing
 
@@ -85,6 +95,13 @@ integration.
 Write down four internal answers: what triggers the work, what proves it
 finished, which durable ID groups related work, and what happens on retry,
 restart, suspend, or resume.
+
+Also write a launcher ledger before the first edit: exact production command,
+readiness owner, exporter processes/containers, required configuration keys,
+and the checked-in file that forwards each key. For Compose, inspect
+`docker compose config` using the same env-file/flags as production and require
+the resolved service configuration to contain every required forwarding path.
+Do not replace this with a direct host launch.
 
 Then invoke exactly one primary focused skill before the first edit **when the
 real completion owner matches a supported row below**. In Claude Code, use the
@@ -139,7 +156,9 @@ Do not report completion until all seven are backed by evidence:
    and `end_margin = root_end - max(child_end)`. Each margin `>= 0` passes;
    `-precision < margin < 0` is `blocked`/inconclusive and must be repeated;
    `margin <= -precision` fails. Never silently round a negative margin to a
-   pass.
+   pass. Require the documented Judgment span type/kind for each business root,
+   LLM call, and tool call when the installed SDK exposes it; a generic span is
+   not equivalent merely because its name says `agent` or `tool`.
 2. **Routing:** require an explicit intended project and propagate key,
    organization, project, and every configured endpoint override to each real
    exporter process. Inspect the installed SDK and fail readiness when its
@@ -154,7 +173,13 @@ Do not report completion until all seven are backed by evidence:
    no-op tracer. Inspect resolution semantics first: if name-based SDK
    initialization can create projects, resolve through a read-only lookup and
    reject the unknown value before calling that creation-capable path.
-   If instrumentation changes dependencies, require pre/post manifest and
+   The positive, explicitly empty, and unique-unknown controls must use the
+   exact checked-in production launcher and configuration path. If the selected
+   production-style topology uses Compose, record its resolved
+   `docker compose config` forwarding and start those real services; a host-only
+   standalone server, scratch process, evaluator overlay, or alternate command
+   does not substitute. If instrumentation
+   changes dependencies, require pre/post manifest and
    lockfile hashes, a frozen-lock install, and proof that unrelated application,
    framework, workflow, provider, and CLI versions did not change.
 3. **Root evidence:** after successful validation, the root contains safe,
@@ -172,20 +197,36 @@ Do not report completion until all seven are backed by evidence:
    Controlled canaries must include `JUDGMENT_API_KEY=`,
    `AWS_SECRET_ACCESS_KEY=`, `X-Api-Key`, `Authorization: ApiKey`,
    `Authorization: Digest`, `Proxy-Authorization: Custom`,
-   `HTTP_AUTHORIZATION=`, camelCase/prefixed secret-token-password keys, and
-   cookie/session-token forms in structured, serialized, assignment, error, and
-   beyond-bound positions. The canonical business/session ID belongs in the
-   dedicated Judgment identity setter, outside payload sanitization.
+   `HTTP_AUTHORIZATION=`, camelCase/prefixed secret-token-password keys,
+   standalone `Bearer <token>` and `Basic <token>` fragments, private-key
+   blocks, and cookie/session-token forms in structured, serialized,
+   assignment, error, and beyond-bound positions. Apply multiline/private-key
+   removal before broad single-line authorization substitutions, then test the
+   complete ordered sanitizer rather than each regex alone. Project and sanitize
+   first, then cap the complete value passed to each input/output setter at
+   1,500 UTF-8 bytes **after the exact installed SDK serializer**, unless a lower
+   documented destination limit is known. Keep the result parseable and include
+   an explicit `_judgment_truncation` object when reduced. The canonical
+   business/session ID belongs in the dedicated Judgment identity setter,
+   outside payload sanitization.
 5. **Export lifecycle:** end the business root, then perform an awaited,
    bounded flush in its outer owner before the tested return/checkpoint/freeze
    boundary.
 6. **Runtime telemetry isolation:** safely inject independent failures into
-   business-root and important-child scope start/enter/exit, every trace setter,
-   sanitizer/classifier, reporter, finalizer, synchronous flush throw, async
-   flush rejection, and flush timeout that the runtime supports. For each named
-   subcase, prove the original application path runs exactly once and preserves
-   response, persistence, cancellation, retry, and original-exception behavior.
-   Never pass a group because one member passed; unexercised cases are blocked.
+   business-root and important-child scope start/enter/exit, every trace setter
+   and active/current-span lookup actually used, sanitizer/classifier, reporter,
+   finalizer, synchronous flush throw, async flush rejection, and flush timeout
+   that the runtime supports. Test rename or explicit span-type/kind setters only
+   when the implementation actually calls them; do not add redundant setters to
+   manufacture a test case. Every telemetry-only operation used, including the
+   lookup used to obtain a span, must execute inside the fail-open trace-only
+   guard. For each named subcase,
+   prove the original application path runs exactly once and preserves response,
+   persistence, cancellation, retry, latency budget, and original-exception
+   behavior. Never pass a group because one member passed; unexercised cases are
+   blocked. Do not use private/underscored SDK APIs unless the exact installed
+   version is pinned and the behavior is covered by an executable contract test;
+   otherwise use a public API or report the capability blocked.
 7. **Stored verification:** run a real production-style application path and
    inspect the matching stored Judgment roots for counts, root IO, windows,
    sessions, children, noise, routing, and raw payload safety. Label evidence
@@ -196,6 +237,10 @@ Do not report completion until all seven are backed by evidence:
    parentage, and terminal root IO are unchanged across a named stability
    interval appropriate to the exporter. Record read timestamps and a span-set
    hash; a missing parent or changing set remains blocked.
+
+   A configured Behavior, Judge, or Test contributes evidence only when the
+   exact current-run trace IDs and recorded result rows are present and inspectable.
+   Zero returned results, an absent score, or a configured judge is not a pass.
 
 Report these gates using `pass`, `fail`, `blocked`, or `not-applicable` and one
 evidence class: static, synthetic, real application, or stored Judgment. The

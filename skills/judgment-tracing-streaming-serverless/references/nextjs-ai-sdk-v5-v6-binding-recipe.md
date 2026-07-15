@@ -19,6 +19,13 @@ the equivalent). Re-record the hashes and versions. An unexplained framework,
 AI SDK, or unrelated dependency change blocks this binding; do not fix tracing
 by upgrading the application stack.
 
+Use public instrumentation APIs. A call whose name is underscored or whose SDK
+documentation/source marks it private/internal is forbidden unless the exact
+dependency version is pinned in the lockfile and an executable test exercises
+that call in the built production bundle and exact launcher. Without both, use a
+public API or mark the affected binding `blocked`; a typecheck or mock does not
+prove a private runtime hook.
+
 ## Contents
 
 - [Preserve one application turn](#1-preserve-one-application-turn)
@@ -71,6 +78,13 @@ existing completion/consumer promise when one exists, and the lifecycle owner.
 `rootSpan` is absent while preserving the original untraced application path:
 
 ```ts
+import {
+  ROOT_CONTEXT,
+  SpanStatusCode,
+  type Context,
+  type Span,
+} from '@opentelemetry/api';
+
 async function finalizeConstructionFailure(rootSpan: Span): Promise<void> {
   // The original exception remains only in application memory. Store one safe,
   // fixed category, end the explicitly created root, and attempt bounded export.
@@ -83,22 +97,32 @@ async function finalizeConstructionFailure(rootSpan: Span): Promise<void> {
     message: 'stream_construction_failed',
   }));
   traceOnly('construction failure root end', () => rootSpan.end());
-  await traceOnlyAsync(
-    'construction failure flush',
-    async () => { await Tracer.forceFlush(); },
-    5_000,
+  await requestJudgmentFlushWithDeadline(
+    500, // default trace-only EOF/export budget; override only from a proven app SLO
   );
 }
 
-async function activateTurn(): Promise<TurnBundle> {
+async function activateTurn(
+  // Pass a context extracted by the route only when preserving a deliberate
+  // upstream W3C parent is part of the application contract. Otherwise use
+  // ROOT_CONTEXT so an ambient Next.js/HTTP span cannot become the business
+  // root's parent by accident. Import Context and ROOT_CONTEXT from the exact
+  // @opentelemetry/api instance used by the initialized Judgment runtime.
+  turnParentContext: Context = ROOT_CONTEXT,
+): Promise<TurnBundle> {
   let callbackEntered = false;
   let applicationWork: Promise<TurnBundle> | undefined;
 
   try {
     return await Tracer.getOTELTracer().startActiveSpan(
       'application.chat_turn',
+      {},
+      turnParentContext,
       (rootSpan) => {
         callbackEntered = true;
+        traceOnly('root span kind', () => {
+          Tracer.setSpanKind('agent', rootSpan);
+        });
         // Retain this exact promise before returning it to the context manager.
         // A faulty context-exit path can throw synchronously after invoking this
         // callback but before the application promise settles.
@@ -142,7 +166,8 @@ async function activateTurn(): Promise<TurnBundle> {
 
 The containing route must await `activateTurn`; do not detach it. Direct
 OpenTelemetry `startActiveSpan` activates context but does not end the created
-span, so every success terminal path ends the root through `finalizeOnce`, and
+span, so every settled success terminal path ends the root through
+`finalizeTraceOnce`, and
 the construction-failure path above ends that same root before rethrowing. Do
 not catch and call `createTurnOnce` again after its application work began.
 `onFinish`, `onError`, and `onAbort` update only the shared in-memory terminal
@@ -162,12 +187,25 @@ root or flush.
   otherwise keep exact routing blocked until a unique live probe settles in that
   exact project. Forward key, organization, project, provided ID, and endpoint overrides into the production
   standalone/serverless launcher; a host `.env` is not container propagation.
+- Before testing, write a deployment ledger naming the exact checked-in build
+  and start commands, script, output artifact, runtime process, and—when used by
+  the selected production-style topology—Docker Compose file(s), service,
+  profiles, and env-file. When that selected topology uses Compose, render
+  `docker compose config` with those exact inputs and prove every required
+  `JUDGMENT_*` value is forwarded into the service. Missing forwarding is a
+  deployment failure; an environment value visible only on the host does not
+  pass. Retain only variable names plus redacted equality/presence checks in
+  evidence—never copy rendered secret values into logs or traces.
 - Run the built real launcher with project explicitly empty and with a unique
   unknown name or ID of the same type it accepts under a 30-second supervisor
   and guaranteed cleanup. Both must exit with the expected routing error before
   readiness, the unknown target must not be created, and a valid-target positive
   control must start. `unset`, timeout, unrelated failure, or nonempty resolved
   ID alone does not pass.
+- Run the valid-target positive and both routing negatives through the exact
+  checked-in Compose service when the selected topology uses Compose. Starting
+  `.next/standalone/server.js` directly on the host is useful diagnosis but
+  cannot substitute for the deployment, routing, or export proof.
 - Inspect resolution semantics first. If name initialization can create a
   project, use a read-only lookup and reject the unknown name before that path.
 
@@ -179,9 +217,12 @@ evidence, not a successful build, proves singleton activation.
 
 Use one manually controlled active root and one terminal-state owner:
 
-1. Guard trace setters, sanitizer/classifier calls, root end, telemetry
-   reporters, and flush reporting. After valid startup, tracing must not change
-   the response or application retry/persistence behavior.
+1. Guard every telemetry-only active-span lookup, rename, trace setter,
+   sanitizer/classifier call, status write, root end, telemetry reporter, and
+   flush report. After valid startup, tracing must not change the response or
+   application retry/persistence behavior. In particular, this is forbidden:
+   `const span = Tracer.getCurrentSpan(); span?.updateName(name);` outside a
+   `traceOnly` callback.
 2. Keep original application errors only in memory. Store stable semantic
    categories such as `stream_construction_failed`, `stream_failed`, and
    `persistence_failed`; never pass raw provider/tool/DB errors to tracing.
@@ -262,6 +303,27 @@ async function traceOnlyAsync(
     if (timer !== undefined) clearTimeout(timer);
   }
 }
+
+// Exporter-level single-flight is separate from each turn's finalization.
+// Promise.race bounds only the caller; it cannot cancel forceFlush(). A busy
+// result is observable and blocks export verification for that turn; it never
+// starts a second exporter call behind a timed-out/hung first call.
+let judgmentFlushInFlight: Promise<void> | undefined;
+
+function requestJudgmentFlushWithDeadline(timeoutMs: number): Promise<boolean> {
+  if (judgmentFlushInFlight !== undefined) {
+    reportTelemetryFailure('Judgment flush busy', new Error('flush_busy'));
+    return Promise.resolve(false);
+  }
+
+  const tracked = Promise.resolve()
+    .then(() => Tracer.forceFlush())
+    .finally(() => {
+      if (judgmentFlushInFlight === tracked) judgmentFlushInFlight = undefined;
+    });
+  judgmentFlushInFlight = tracked;
+  return traceOnlyAsync('Judgment flush', () => tracked, timeoutMs);
+}
 ```
 
 Put trace-only sanitization/classification inside these callbacks. Await the
@@ -270,6 +332,17 @@ rejection alter response, persistence, cancellation, retry, or the original
 exception. Inject a rejecting async callback into the sync guard during tests;
 it must be reported without an unhandled rejection, and the integration remains
 blocked until the call site uses the awaited guard.
+
+The timeout applies only to trace-only terminal writes/end/export, never to real
+generation, persistence, or an existing application-owned settlement promise.
+Default it to at most 500 ms. A different bound requires a recorded application
+response/EOF SLO and matched latency evidence. On timeout, preserve the exact
+application response and mark export verification blocked; waiting five seconds
+for telemetry is a user-visible regression, not a successful fail-open design.
+Use `requestJudgmentFlushWithDeadline` for every exporter call. A timed-out
+exporter promise remains the one process-wide in-flight call; later requests
+return a reported busy failure and leave their export evidence blocked rather
+than queueing an unbounded pass or creating one live `forceFlush()` per turn.
 
 Use a closed type for root error recording. This helper records only trace
 state; the application catch/rethrow/recovery remains outside it:
@@ -321,16 +394,21 @@ one of its fixed categories, use `unexpected_application_error`.
   `consumeStream()` internally.
 - Do not buffer the response for tracing. Forward chunks, status, status text,
   and headers unchanged.
-- Use the application's request/disconnect signal to abort upstream model/tool
-  work before best-effort telemetry. Cancellation must not wait for tracing.
-- Cancellation wins races with `onFinish`: make its check part of the
-  persistence commit or pass the abort signal into persistence. After cancel,
-  do not persist success/assistant/tool-call output or emit completed outcome.
-- Preserve detached completion only when the application already documents it;
-  trace that work as a separate durable unit. If a pre-existing extra consumer
-  appears to continue generation or persistence after client cancellation but
-  that ownership is undocumented, preserve behavior and report cancellation
-  ownership `blocked` rather than changing application semantics.
+- Characterize the uninstrumented disconnect policy before editing. If the
+  application already uses the request/disconnect signal to abort upstream
+  model/tool work, preserve that propagation before best-effort telemetry. Do
+  not add upstream abort solely for tracing.
+- Record `transport.client_disconnected` separately from the application
+  terminal outcome. A disconnect is not automatically an application
+  cancellation. When the application actually cancels, cancellation wins races
+  with `onFinish` and its check belongs in the persistence commit. When a
+  pre-existing application-owned consumer intentionally continues generation
+  or persistence, keep the application root open and record its eventual
+  success/failure alongside the disconnect.
+- Use a separate durable trace only when the application already defines the
+  continued work as a separate durable unit. If ownership is undocumented,
+  preserve behavior and report it `blocked` rather than forcing abort, moving
+  persistence, or inventing a tracing boundary.
 
 Adding an extra-consumer pattern is forbidden: a tee can remove backpressure
 and let generation, tools, and success persistence continue after the client
@@ -351,116 +429,173 @@ These callbacks may record an in-memory outcome only. Final root end and flush
 must be owned outside them after a proven settlement barrier; without one,
 report the gate `blocked`.
 
-Because AI SDK 5/6 does not await `onAbort`, cancellation must win the shared
-terminal-state race synchronously before that callback returns and before any
-`await` or tracing work. Upstream abort propagation remains application work;
-best-effort trace writes happen afterward:
+Because AI SDK 5/6 does not await `onAbort`, any real application cancellation
+must win the application's existing outcome race synchronously before that
+callback returns and before any `await` or tracing work. But `onAbort` alone may
+describe one stream consumer rather than the whole application when a
+pre-existing detached owner continues. Always record the framework abort facet;
+map it to `markApplicationCancelled()` only when installed-source evidence and
+the application's terminal owner say the entire operation cancelled. The
+response wrapper separately records that the client disconnected:
 
 ```ts
 onAbort: () => {
-  traceOnly('mark cancellation outcome', () => lifecycle.markCancelled());
-  // The guarded transition above is synchronous; application abort propagation
-  // is separate and must not wait for tracing.
+  traceOnly('record framework/application abort facets', () => {
+    lifecycle.recordFrameworkAbort();
+    if (applicationTerminalOwner.outcome === 'cancelled') {
+      lifecycle.markApplicationCancelled();
+    }
+  });
+  // `applicationTerminalOwner` is the repository's pre-existing outcome
+  // authority, not trace state. Application abort propagation is separate and
+  // must not wait for tracing.
 }
 ```
 
-Use one idempotent finalizer on success, error, persistence failure, and cancel:
+Keep application settlement and trace finalization as two ordered stages on
+success, error, persistence failure, and real application cancellation:
 
-1. stop/settle application work according to the real terminal outcome;
-2. await the installed runtime's real public signal that the AI SDK framework
-   telemetry span has ended across every consumer assigned to this trace;
-3. write final bounded semantic output or normalized error/cancel outcome;
-4. best-effort end the application root; and
-5. await a bounded `Tracer.forceFlush()` attempt before response EOF or through
-   another deployment primitive proven to survive the tested freeze/restart.
+1. The application's existing owner stops/settles application work according
+   to the real terminal outcome.
+2. That owner awaits the installed runtime's real public signal that the AI SDK
+   framework telemetry span ended across every consumer assigned to this trace.
+   This is real application/framework settlement: do not put it inside
+   `traceOnlyAsync`, a telemetry timeout, or a telemetry `Promise.race`.
+3. Only after stages 1–2 settle, invoke one bounded trace-only finalizer to write
+   final semantic output or normalized error/cancel outcome.
+4. That trace-only finalizer best-effort ends the application root.
+5. It then attempts bounded `Tracer.forceFlush()` before response EOF or through
+   a deployment primitive proven to survive tested freeze/restart.
 
-“Idempotent” means single-flight, not a boolean early-return. Memoize one promise
-before its first await and return that same promise to every EOF/error/cancel
-caller so a second caller cannot continue while finalization/export is pending:
+The stages 1–2 owner retains and awaits its real promise under the application's
+existing timeout/retry policy. The 500 ms telemetry budget starts only at stage
+3 and therefore cannot detach, truncate, or relabel real work. The trace-only
+finalizer is idempotent and single-flight, not a boolean early-return: memoize
+one promise before its first await and return it to every settled terminal owner
+so a second caller cannot continue while trace finalization/export is pending:
 
 ```ts
-let terminalFinalization: Promise<void> | undefined;
+let traceFinalization: Promise<void> | undefined;
 
-function finalizeOnce(): Promise<void> {
-  terminalFinalization ??= (async () => {
+function finalizeTraceOnce(): Promise<void> {
+  traceFinalization ??= (async () => {
     // TraceTerminalState is an instrumentation-local mirror of the real
-    // application outcome. Freeze/read and all final trace work stay inside the
-    // bounded guard so this memoized promise is total.
+    // application outcome. Application/framework settlement already completed
+    // outside this function. Only trace work is subject to this deadline.
     await traceOnlyAsync(
-      'terminal finalization',
+      'trace finalization',
       async () => {
         const outcome = terminalState.freezeAndRead();
-        await finalizeTurn(outcome);
+        // This helper writes/ends this turn independently, then routes its only
+        // exporter call through requestJudgmentFlushWithDeadline.
+        await writeEndAndFlushTrace(outcome); // trace-only; never awaits app work
       },
-      5_000,
+      500, // default; a different value requires a recorded application EOF SLO
     );
   })();
-  return terminalFinalization;
+  return traceFinalization;
 }
 
-// Every terminal owner awaits this exact shared promise.
-await finalizeOnce();
+// Only after the existing owner has awaited real application/framework work:
+await finalizeTraceOnce();
 ```
 
 `terminalState` is an instrumentation-local, pure synchronous mirror of the
 repository's real application outcome; it never controls response, persistence,
-retry, or cancellation. `markCancelled()` and `markStreamFailure()` translate
+retry, or cancellation. `markApplicationCancelled()` and
+`markStreamFailure()` translate
 already-observed application events into fixed trace categories;
 `freezeAndRead()` atomically returns the winner and prevents a later callback
 from overwriting it. Guard every transition so an injected throw blocks tracing
 evidence without changing application behavior. The application's existing
 terminal-outcome rule decides which event is mirrored as the winner. Test two
-concurrent callers and prove both remain pending until the one
-finalization/flush finishes.
+concurrent callers and prove both receive the same pending trace-finalization
+promise until its one end/flush attempt finishes. Separately prove that a slow
+real `frameworkSettled` promise is awaited to its actual outcome and is never
+raced by the 500 ms trace-only deadline.
 
-### Bind finalization to the existing response owner
+### Bind finalization to the existing settlement owner
 
-Do not add `consumeStream`, a tee, or a background drain for tracing. Use this
-shape only when the application already had a programmatic consumer/completion
-promise and installed-source inspection proves it settles after the outer AI
-SDK telemetry span. If the response reader is the only consumer, this shape is
-allowed only when the same inspection proves that reader completion has the
-required ordering; otherwise the binding remains `blocked`.
+Do not add `consumeStream`, a tee, or a background drain for tracing. First
+classify who owned settlement before instrumentation. Use `response_eof` only
+when the pre-instrumentation EOF path already awaited the same application or
+framework promise and propagated its rejection to the client. Use
+`detached_application` when an existing programmatic consumer settled
+independently; in that mode EOF and reader errors retain their original timing
+and semantics, while the consumer's original owner finalizes the trace later.
+If neither owner has a proven completion signal after the outer AI SDK telemetry
+span, the binding remains `blocked`.
 
 The wrapper replaces the returned response body; it is not a second consumer.
 It forwards the same chunks, status, status text, and headers. Give its outer
 queue a zero high-water mark so it does not add a second eager chunk beyond the
 source stream's own queue. `frameworkSettled` is the retained existing promise
-from the pre-instrumentation call site, including any existing application-owned
-timeout/rejection policy. Do not create a new unbounded wait here. If that
-existing owner has no proven terminal settlement or bound, this response binding
-is `blocked`; a tracing timeout must never truncate real application work.
-`finalizeOnce()` is the bounded, total, single-flight function above: it records
+from the pre-instrumentation call site, including its existing timeout/rejection
+policy. Only the owner that already awaited it may keep doing so: the response
+wrapper in `response_eof` mode, or the original detached owner in
+`detached_application` mode. Never rebind a detached rejection to
+`controller.error`, delay clean EOF for it, wrap it in the 500 ms telemetry
+deadline, or introduce a tracing timeout. If the existing owner has no proven
+terminal settlement, this response binding is `blocked`.
+`finalizeTraceOnce()` is the bounded, total, single-flight function above: it records
 throw/rejection/timeout and always resolves. Never memoize the raw
-`finalizeTurn()` promise.
+trace-write/end/flush promise or include `frameworkSettled` inside it.
 
 ```ts
 interface StreamLifecycle {
-  markCancelled(): void;
+  markTransportDisconnected(): void;
+  markTransportFailure(): void;
+  recordFrameworkAbort(): void;
+  markApplicationCancelled(): void;
   markStreamFailure(): void;
-  finalizeOnce(): Promise<void>;
+  finalizeTraceOnce(): Promise<void>;
 }
+
+type SettlementOwner = 'response_eof' | 'detached_application';
 ```
 
 ```ts
 function bindResponseLifecycle(
   response: Response,
   frameworkSettled: Promise<void>,
+  settlementOwner: SettlementOwner,
   lifecycle: StreamLifecycle,
 ): Response {
   if (!response.body) throw new Error('stream_response_body_missing');
   const reader = response.body.getReader();
-  let cancelled = false;
+  let clientDisconnected = false;
 
-  async function failApplicationStream(
+  async function failResponseReader(
     controller: ReadableStreamDefaultController<Uint8Array>,
     error: unknown,
   ): Promise<void> {
-    if (cancelled) return;
+    if (clientDisconnected) return;
+    // A reader failure is transport evidence, not an application verdict.
+    traceOnly('mark transport failure', () => lifecycle.markTransportFailure());
+    controller.error(error); // preserve the original reader error immediately
+
+    if (settlementOwner === 'response_eof') {
+      // In this mode the response was already the application-settlement owner.
+      // Keep owning real settlement after signaling the original transport error,
+      // then finalize without trying to error the controller a second time.
+      try {
+        await frameworkSettled;
+      } catch {
+        traceOnly('mark application failure', () => lifecycle.markStreamFailure());
+      }
+      await lifecycle.finalizeTraceOnce();
+    }
+    // detached_application: its unchanged original owner settles and finalizes.
+  }
+
+  async function failApplicationAtEof(
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    error: unknown,
+  ): Promise<void> {
+    if (clientDisconnected) return;
     traceOnly('mark stream failure outcome', () => lifecycle.markStreamFailure());
-    await lifecycle.finalizeOnce(); // bounded and total; never rejects
-    if (cancelled) return;
-    controller.error(error); // the original source/framework failure only
+    await lifecycle.finalizeTraceOnce(); // trace-only, bounded, and total
+    if (!clientDisconnected) controller.error(error);
   }
 
   const body = new ReadableStream<Uint8Array>({
@@ -469,42 +604,49 @@ function bindResponseLifecycle(
       try {
         next = await reader.read();
       } catch (error) {
-        await failApplicationStream(controller, error);
+        await failResponseReader(controller, error);
         return;
       }
-      if (cancelled) return;
+      if (clientDisconnected) return;
       if (!next.done) {
         controller.enqueue(next.value);
         return;
       }
 
-      try {
-        await frameworkSettled; // preserves the existing application policy
-      } catch (error) {
-        await failApplicationStream(controller, error);
+      if (settlementOwner === 'detached_application') {
+        // Preserve pre-instrumentation EOF. The existing detached owner—not
+        // this response—awaits frameworkSettled and then finalizes the trace.
+        controller.close();
         return;
       }
-      if (cancelled) return;
-      await lifecycle.finalizeOnce();
-      if (cancelled) return;
+
+      try {
+        // Real application/framework work: deliberately outside the 500 ms
+        // trace-only deadline and awaited under the existing owner policy.
+        await frameworkSettled;
+      } catch (error) {
+        await failApplicationAtEof(controller, error);
+        return;
+      }
+      if (clientDisconnected) return;
+      await lifecycle.finalizeTraceOnce();
+      if (clientDisconnected) return;
       controller.close();
     },
     async cancel(reason) {
-      if (cancelled) return;
-      cancelled = true;
-      traceOnly('mark cancellation outcome', () => lifecycle.markCancelled());
-      // The guarded trace-outcome transition above completes synchronously
-      // before the first await; `cancelled` still protects application flow if
-      // the transition itself is fault-injected.
-      // Invoke the repository's existing upstream abort primitive here before
-      // reader.cancel, unless reader.cancel is proven to be that primitive.
-      // This is application cancellation work, not a best-effort trace write.
-      try {
-        await reader.cancel(reason);
-      } finally {
-        await Promise.allSettled([frameworkSettled]);
-        await lifecycle.finalizeOnce();
-      }
+      if (clientDisconnected) return;
+      clientDisconnected = true;
+      traceOnly('record transport disconnect', () =>
+        lifecycle.markTransportDisconnected());
+      // Preserve exactly the response reader's pre-instrumentation cancel
+      // behavior. Invoke an additional upstream abort primitive only if the
+      // application already invoked it here before tracing was added.
+      await reader.cancel(reason);
+      // Do not wait for `frameworkSettled` or telemetry here when the existing
+      // application owns continued work: that would change cancel-return
+      // latency. Its pre-existing completion owner must invoke finalizeTraceOnce
+      // after framework settlement. If no pre-existing owner covers the cancel
+      // branch, cancel finalization remains blocked; do not manufacture one.
     },
   }, { highWaterMark: 0 });
 
@@ -519,10 +661,20 @@ function bindResponseLifecycle(
 If `frameworkSettled` can reject for real application work, retain exactly the
 pre-instrumentation response/error/persistence behavior. Do not convert that
 rejection into a telemetry-only warning. In contrast, all trace-only work
-inside `finalizeOnce()` is guarded and cannot reject or hang into the response.
-The wrapper-local `cancelled` bit prevents an EOF/error continuation from
-closing, erroring, or reclassifying the stream after cancellation wins. Do not
+inside `finalizeTraceOnce()` is guarded and cannot reject or hang into the response.
+The wrapper-local `clientDisconnected` bit prevents an EOF/error continuation from
+closing, erroring, or reclassifying the stream after the disconnect. Do not
 catch controller-state errors as model/stream failures.
+
+For an existing detached application consumer, use
+`settlementOwner='detached_application'` and bind `finalizeTraceOnce()` to that
+consumer's original application owner, not to EOF, reader error, or the response
+`cancel()` method. That owner records the actual final application success/error
+after `frameworkSettled`; the root can therefore contain both
+`transport.client_disconnected=true` and a successful application result. If no
+existing lifecycle owner can keep the runtime alive through that finalizer,
+export-after-disconnect remains `blocked` rather than being forced into the
+transport callback.
 
 Before accepting this adapter, compare it with the uninstrumented response
 under a slow reader and a mid-read abort. With no downstream read, it must not
@@ -531,6 +683,13 @@ status, headers, terminal outcome, upstream cancellation, persistence, and
 tool-call behavior must match. If the installed runtime needs BYOB or another
 non-default queuing strategy, this generic adapter is not proof; implement and
 test the repository's existing strategy or leave the binding `blocked`.
+
+Measure matched uninstrumented and instrumented time-to-first-byte, chunk
+cadence, EOF, and cancel-promise settlement for success, failure, and disconnect.
+Trace-only finalization may add at most 500 ms to EOF by default; a different
+limit requires a recorded application SLO. A telemetry timeout preserves the
+application result but blocks the export gate. Do not accept a five-second EOF
+delay merely because it eventually produces a trace.
 
 `onFinish`, `onAbort`, response cancellation, a sleep, a UI waterfall, a private
 hook, or a second consumer is not a framework-child settlement signal. If no
@@ -543,10 +702,12 @@ span whose parent is absent fails tree completeness and cannot pass timing even
 when the root covers every span that happened to arrive.
 
 When the response consumer belongs to this trace, its wrapper may delay only
-final EOF while finalization settles. Its cancel branch aborts upstream first,
-cancels that response reader, then invokes fail-open finalization. Consumers
-owned by a separate durable unit remain untouched and must settle in their own
-trace. Preserve controller close/error/cancel behavior.
+final EOF while finalization settles. Its cancel branch records transport
+disconnect and preserves the response reader's original cancellation behavior;
+it invokes an additional upstream abort only when the uninstrumented
+application already did so. Existing application-owned continued work settles
+through its original owner, which records the final application outcome and
+invokes fail-open finalization. Preserve controller close/error/cancel behavior.
 
 Do not assume Next.js `after(...)`/`waitUntil(...)` survives hard kill. Use it
 only when the tested deployment guarantees the promise through freeze and
@@ -566,7 +727,8 @@ use one shared helper at least as strong as this TypeScript starting point,
 then extend it for providers and domain secrets actually present in the app:
 
 ```ts
-const TRACE_TEXT_LIMIT = 1_500; // margin below serialized attribute clipping
+const TRACE_ATTRIBUTE_UTF8_BYTE_LIMIT = 1_500;
+const TRACE_UTF8_ENCODER = new TextEncoder();
 const EXACT_SECRET_KEYS = new Set([
   'authorization', 'proxy_authorization', 'http_authorization',
   'cookie', 'set_cookie', 'session', 'session_token', 'session_cookie',
@@ -579,9 +741,11 @@ const SECRET_KEY_SUFFIXES = [
 const AUTH_LINE_RE = /^([ \t]*(?:proxy-)?authorization[ \t]*:[ \t]*).*$/gim;
 const AUTH_ENV_LINE_RE = /^([ \t]*(?:(?:http|proxy)[_-])?authorization[ \t]*=[ \t]*).*$/gim;
 const COOKIE_LINE_RE = /^([ \t]*(?:set-)?cookie[ \t]*:[ \t]*).*$/gim;
+const PRIVATE_KEY_BLOCK_RE = /-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z0-9]+)* PRIVATE KEY-----/gi;
+const STANDALONE_AUTH_SCHEME_RE = /\b(?:Bearer|Basic)[ \t]+[A-Za-z0-9._~+/=-]+/gi;
 const QUOTED_SENSITIVE_HEADER_RE = /('(?:(?:proxy-)?authorization|(?:set-)?cookie)\s*:\s*)[^'\r\n]*'|("(?:(?:proxy-)?authorization|(?:set-)?cookie)\s*:\s*)[^"\r\n]*"/gi;
 const INLINE_SENSITIVE_HEADER_RE = /((?:(?:proxy-)?authorization|(?:set-)?cookie)\s*:\s*)(?!\s*\[redacted\])[^\r\n]*/gi;
-const KEY_VALUE_RE = /((["']?)([A-Za-z][A-Za-z0-9_-]*)\2\s*[:=](?!\s*\[redacted\])\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,&;}\]]+)/gi;
+const KEY_LABEL_RE = /((["']?)([A-Za-z][A-Za-z0-9_-]*)\2\s*[:=](?!\s*\[redacted\])\s*)/gi;
 const QUERY_PARAM_RE = /([?&#])([^?&=#\s]+)=([^&#\s]*)/g;
 
 function normalizeTraceKey(key: string): string {
@@ -599,6 +763,10 @@ function isSecretTraceKey(key: string): boolean {
   );
 }
 
+function traceUtf8ByteLength(value: string): number {
+  return TRACE_UTF8_ENCODER.encode(value).byteLength;
+}
+
 function sanitizeTraceQueryParams(value: string): string {
   return value.replace(QUERY_PARAM_RE, (match, separator, rawKey) => {
     let key = rawKey;
@@ -611,43 +779,114 @@ function sanitizeTraceQueryParams(value: string): string {
   });
 }
 
+function sanitizeTraceAssignments(value: string): string {
+  let output = '';
+  let copiedThrough = 0;
+  KEY_LABEL_RE.lastIndex = 0;
+
+  for (let match = KEY_LABEL_RE.exec(value); match !== null;
+       match = KEY_LABEL_RE.exec(value)) {
+    const [label, , , key] = match;
+    if (!isSecretTraceKey(key)) continue;
+
+    const valueStart = match.index + label.length;
+    let valueEnd = valueStart;
+    const quote = value[valueStart];
+    if (quote === '"' || quote === "'") {
+      valueEnd += 1;
+      let escaped = false;
+      while (valueEnd < value.length) {
+        const character = value[valueEnd++];
+        if (!escaped && character === quote) break;
+        escaped = !escaped && character === '\\';
+        if (character !== '\\') escaped = false;
+      }
+    } else {
+      const auth = value.slice(valueStart).match(
+        /^(?:Bearer|Basic)[ \t]+[A-Za-z0-9._~+/=-]+/i,
+      );
+      valueEnd = valueStart + (auth?.[0].length ?? 0);
+      if (!auth) valueEnd = valueStart;
+      // For a secret key, privacy wins over a no-space comma/semicolon/&
+      // boundary: consume the complete unquoted token even if its tail looks
+      // like another assignment. A later benign field needs whitespace.
+      while (valueEnd < value.length && !/[\s}\]]/.test(value[valueEnd])) {
+        valueEnd += 1;
+      }
+    }
+
+    output += value.slice(copiedThrough, match.index);
+    output += `${label}"[redacted]"`;
+    copiedThrough = valueEnd;
+    KEY_LABEL_RE.lastIndex = valueEnd;
+  }
+  return output + value.slice(copiedThrough);
+}
+
+function protectQuotedSensitiveHeaders(value: string): {
+  protectedValue: string;
+  restore: (sanitized: string) => string;
+} {
+  // Keep a complete quoted shell header out of overlapping assignment/header
+  // regexes. The sentinel is chosen outside the input, then restored only to a
+  // fully sanitized header; no original secret value is retained.
+  let sentinelPrefix = '\uE000judgment_header_';
+  while (value.includes(sentinelPrefix)) sentinelPrefix += '_';
+  const replacements: Array<[string, string]> = [];
+  const protectedValue = value.replace(
+    QUOTED_SENSITIVE_HEADER_RE,
+    (_match, singlePrefix, doublePrefix) => {
+      const placeholder = `${sentinelPrefix}${replacements.length}\uE001`;
+      const sanitized = singlePrefix
+        ? `${singlePrefix}[redacted]'`
+        : `${doublePrefix}[redacted]"`;
+      replacements.push([placeholder, sanitized]);
+      return placeholder;
+    },
+  );
+  return {
+    protectedValue,
+    restore: (sanitized) => replacements.reduce(
+      (current, [placeholder, replacement]) =>
+        current.split(placeholder).join(replacement),
+      sanitized,
+    ),
+  };
+}
+
 function sanitizeTraceText(value: string): string {
   const stripped = value.trimStart();
   if (stripped.startsWith('{') || stripped.startsWith('[')) {
     try {
       const structured = sanitizeTraceValue(JSON.parse(value));
-      const serialized = JSON.stringify(structured);
-      return serialized.length > TRACE_TEXT_LIMIT
-        ? `${serialized.slice(0, TRACE_TEXT_LIMIT)}…`
-        : serialized;
+      return JSON.stringify(structured);
     } catch {
       // Continue with conservative free-text rules.
     }
   }
 
+  // Multiline blocks must be removed first. A greedy inline/header rule can
+  // otherwise consume a BEGIN delimiter and leave the key body behind.
+  const withoutPrivateKeys = value.replace(PRIVATE_KEY_BLOCK_RE, '[redacted]');
+  const quotedHeaders = protectQuotedSensitiveHeaders(withoutPrivateKeys);
+
   // Redact full-URL query values before the generic key/value pattern can
   // treat `https:` as one harmless assignment and consume the query.
-  const redacted = sanitizeTraceQueryParams(value)
-    .replace(QUOTED_SENSITIVE_HEADER_RE, (_match, singlePrefix, doublePrefix) =>
-      singlePrefix
-        ? `${singlePrefix}[redacted]'`
-        : `${doublePrefix}[redacted]"`,
-    )
+  const redacted = sanitizeTraceAssignments(
+    sanitizeTraceQueryParams(quotedHeaders.protectedValue),
+  )
     // Unquoted inline shell-header boundaries are ambiguous, so remove the
     // remainder of that line conservatively.
     .replace(INLINE_SENSITIVE_HEADER_RE, '$1[redacted]')
-    .replace(KEY_VALUE_RE, (match, label, _quote, key) =>
-      isSecretTraceKey(key) ? `${label}"[redacted]"` : match,
-    )
     .replace(AUTH_LINE_RE, '$1[redacted]')
     .replace(AUTH_ENV_LINE_RE, '$1[redacted]')
     .replace(COOKIE_LINE_RE, '$1[redacted]')
+    // Scheme tokens can appear without an Authorization header label in tool
+    // output, logs, copied commands, or a camelCase key/value fragment.
+    .replace(STANDALONE_AUTH_SCHEME_RE, '[redacted]')
     .replace(/\b(?:sk-[A-Za-z0-9_-]{10,}|ghp_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,}|xox[baprs]-[A-Za-z0-9-]{8,})\b/g, '[redacted]')
-    .replace(/(\b[A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s:@]*:[^/\s@]+@/g, '$1[redacted]@')
-    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[redacted]');
-  return redacted.length > TRACE_TEXT_LIMIT
-    ? `${redacted.slice(0, TRACE_TEXT_LIMIT)}…`
-    : redacted;
+    .replace(/(\b[A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s:@]*:[^/\s@]+@/g, '$1[redacted]@');
+  return quotedHeaders.restore(redacted);
 }
 
 function sanitizeTraceValue(value: unknown): unknown {
@@ -667,14 +906,43 @@ function sanitizeTraceValue(value: unknown): unknown {
   return typeof value === 'string' ? sanitizeTraceText(value) : value;
 }
 
-function boundSanitizedTraceValue(value: unknown): unknown {
-  const serialized = JSON.stringify(value);
+function boundSanitizedTraceValue(rawValue: unknown): unknown {
+  // This combined API makes the required order hard to reverse: sanitize the
+  // complete composed value first, then bound the aggregate serialization.
+  const sanitized = sanitizeTraceValue(rawValue);
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(sanitized);
+  } catch {
+    return { omitted: 'unserializable' };
+  }
   if (typeof serialized !== 'string') return { omitted: 'unserializable' };
-  if (serialized.length <= TRACE_TEXT_LIMIT) return value;
-  return {
-    truncated: true,
-    sanitizedPreview: serialized.slice(0, TRACE_TEXT_LIMIT),
-  };
+  if (traceUtf8ByteLength(serialized) <= TRACE_ATTRIBUTE_UTF8_BYTE_LIMIT) {
+    return sanitized;
+  }
+
+  // Find the longest preview whose complete truncation envelope, after its own
+  // JSON escaping and UTF-8 encoding, remains <=1,500 bytes. JavaScript string
+  // length counts UTF-16 code units, not storage bytes, so it is not a bound.
+  const characters = Array.from(serialized);
+  let low = 0;
+  let high = characters.length;
+  let best = { truncated: true, sanitizedPreview: '' };
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = {
+      truncated: true,
+      sanitizedPreview: characters.slice(0, middle).join(''),
+    };
+    if (traceUtf8ByteLength(JSON.stringify(candidate)) <=
+        TRACE_ATTRIBUTE_UTF8_BYTE_LIMIT) {
+      best = candidate;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return best;
 }
 ```
 
@@ -683,8 +951,12 @@ including `Authorization: ApiKey`, `Authorization: Digest`,
 `Proxy-Authorization: Custom`, quoted JSON keys, a nearby benign field that must
 survive, structured and serialized `JUDGMENT_API_KEY` /
 `AWS_SECRET_ACCESS_KEY` / `CLIENT_SECRET` / camelCase access-token/password /
-cookie/session-token values, `Set-Cookie`, `HTTP_AUTHORIZATION`, comma-bearing
-`PASSWORD`, query-string/plain assignments, and a full URL such as
+cookie/session-token values, `Set-Cookie`, `HTTP_AUTHORIZATION`, the exact
+unquoted regressions `PASSWORD=CANARY,SECOND SURVIVES_PASSWORD_TAIL`,
+`PASSWORD=CANARY,SECOND=NO SURVIVES_ASSIGNMENT_SHAPED_TAIL`,
+`BENIGN=SURVIVES,PASSWORD=CANARY`, and
+`FOO=x;JUDGMENT_API_KEY=CANARY`, quoted comma/semicolon-bearing `PASSWORD`,
+query-string/plain assignments, and a full URL such as
 `https://example.test/?api_key=CANARY&benign=SURVIVES` plus a fragment such as
 `https://example.test/#access_token=CANARY&benign=SURVIVES`, and URL userinfo
 under a non-HTTP scheme such as `amqps://user:CANARY@host` plus password-only
@@ -693,16 +965,27 @@ under a non-HTTP scheme such as `amqps://user:CANARY@host` plus password-only
 `curl -H 'Cookie: sid=CANARY; refresh=CANARY2' https://benign.example`, plus
 single-quoted Digest values containing double-quoted fields and double-quoted
 Cookie values containing single-quoted fields while the adjacent URL survives;
-then
-run the raw canary matrix below. Helper tests alone are not stored-path proof.
-Prefer `sanitizeTraceValue` before serialization; do not rely on a greedy
+standalone `Bearer CANARY` and `Basic CANARY` text; unquoted
+`httpAuthorization=Bearer CANARY`; and RSA, EC, OPENSSH, and generic multiline
+private-key blocks. Put several of these in one composed payload with benign
+markers before, between, and after them so ordering bugs are exercised. Assert
+the full unquoted password values (including `,SECOND` and `,SECOND=NO`) are
+absent while both whitespace-separated survival markers remain, both later
+secret assignments are redacted, and `SURVIVES` plus `FOO=x` remain. Also assert
+`traceUtf8ByteLength(JSON.stringify(boundSanitizedTraceValue(value))) <= 1_500`
+for long ASCII, multibyte Unicode/emoji, escape-heavy strings, arrays, objects,
+and the truncation envelope;
+then run the raw canary matrix below. Isolated regex/helper tests are not
+stored-path proof. Use the combined `boundSanitizedTraceValue` at setters so
+full sanitization always precedes aggregate bounding; do not rely on a greedy
 whole-line JSON regex. A policy-approved business `sessionId` is deliberately
 separate and is set through `Tracer.setSessionId`, not copied through this
 payload sanitizer.
 
-Sanitize the final composed value before bounding. Leave margin below platform
-attribute clipping so serialized `judgment.input`/`judgment.output` remains
-parseable. Truncation is not redaction. Treat short queries, shell commands,
+Sanitize the final composed value before bounding. The complete serialized
+`judgment.input`/`judgment.output`, including truncation metadata, must be no
+larger than 1,500 UTF-8 bytes and remain parseable in settled raw storage.
+Truncation is not redaction. Treat short queries, shell commands,
 URLs, headers, and error messages as sensitive too; remove unnecessary PII
 before bounding. A conservative credential/auth baseline does not claim to
 cover general PII or application-specific domain secrets.
@@ -726,11 +1009,10 @@ let toolSpan: ReturnType<typeof Tracer.getCurrentSpan> | undefined;
 traceOnly('tool input', () => {
   toolSpan = Tracer.getCurrentSpan();
   if (!toolSpan) return;
+  Tracer.setSpanKind('tool', toolSpan);
   toolSpan.updateName(`application.tool.${businessToolName}`);
   Tracer.setInput(
-    boundSanitizedTraceValue(
-      sanitizeTraceValue(projectApprovedToolInput(realToolInput)),
-    ),
+    boundSanitizedTraceValue(projectApprovedToolInput(realToolInput)),
     toolSpan,
   );
 });
@@ -740,9 +1022,7 @@ try {
   traceOnly('tool output', () => {
     if (toolSpan) {
       Tracer.setOutput(
-        boundSanitizedTraceValue(
-          sanitizeTraceValue(projectApprovedToolOutput(result)),
-        ),
+        boundSanitizedTraceValue(projectApprovedToolOutput(result)),
         toolSpan,
       );
     }
@@ -775,6 +1055,14 @@ no credential-shaped text. The required order is field projection without
 truncation, then sanitization, then aggregate bounding; bounding before
 sanitization can split a credential and leak its remainder.
 
+Do not hoist `Tracer.getCurrentSpan()`, `span.updateName(...)`, field
+projection, `sanitizeTraceValue`, `boundSanitizedTraceValue`, or a trace setter
+out of `traceOnly` for convenience. Fault-inject each stage independently,
+including lookup throw, rename throw, projection/sanitizer throw, input/output
+setter throw, and status throw. For every subcase the real tool executes once,
+returns or throws the same value/object, persistence and streamed bytes are
+unchanged, and the telemetry fault is reported safely.
+
 ## 7. Prove the production path
 
 Before running any build, typecheck, import, static-generation, smoke, or dev
@@ -791,6 +1079,14 @@ turns. Record exact session/customer IDs and returned application outcomes.
 Immediately restart after a completed bounded export where applicable, wait for
 ingestion, then reconcile settled raw Judgment data.
 
+Use the deployment ledger from section 2. When the selected production-style
+topology uses Docker Compose, first retain the rendered `docker compose config`
+showing every required
+`JUDGMENT_*` variable forwarded into the named service, then run the scenario
+and valid/empty/unknown routing controls through that exact checked-in Compose
+path. A direct host launch of `.next/standalone/server.js` is only diagnostic and
+cannot pass these gates.
+
 After each awaited bounded flush, poll until the expected complete parent tree,
 span-ID set, terminal IO/status, and timestamps remain unchanged across a named
 stability interval. Record raw-read timestamps and a span-set hash. Missing or
@@ -801,14 +1097,24 @@ Evidence is path-specific. An error-path trace cannot pass normal success,
 tool, persistence, cancellation, or general finalization. Inspect at least one
 real successful tool-bearing stored turn before those gates pass. Verify every
 parent resolves before timing arithmetic; a partial tree is never a timing
-pass. A finite client-owned HTTP stream has a cancellation gate: missing signal
-propagation, unexercised abort, or undocumented detached completion is
-`blocked` or failed, never `not-applicable`. Do not claim the integration
-complete while a required path remains blocked.
+pass. A finite client-owned HTTP stream has a disconnect-ownership gate:
+uncharacterized baseline behavior, unexercised mid-read disconnect, changed
+upstream/persistence policy, or undocumented continued completion is `blocked`
+or failed, never `not-applicable`. Do not claim the integration complete while
+a required path remains blocked.
 
-Trigger the abort while a response-body read is pending. This is the binding
-test for the extra-consumer/backpressure race; an abort before stream reading or
-after ordinary EOF does not prove cancellation stops active upstream work.
+Platform Behavior/Code Judge evidence is result-specific too. Cite the exact
+settled trace ID, Behavior/Judge version, result ID, and inspected result
+payload. Zero returned results, a missing result, or an aggregate without that
+provenance is blocked evidence; never infer a green outcome from absence.
+
+Trigger the disconnect while a response-body read is pending. This is the
+binding test for the extra-consumer/backpressure race; a disconnect before
+stream reading or after ordinary EOF does not characterize active work. Compare
+against the uninstrumented app. If the baseline cancels upstream, prove the
+instrumented path still cancels and prevents late side effects. If a pre-existing
+application owner continues and persists, prove tracing preserves that behavior
+and stores transport disconnect separately from the final application outcome.
 
 Require:
 
@@ -821,15 +1127,34 @@ Require:
   each margin `>= 0` passes, `-precision < margin < 0` is inconclusive and must
   be repeated, and `margin <= -precision` fails. An empty root parent is required
   only without deliberate upstream distributed context;
+- raw stored kinds are `agent` for the application turn root and `tool` for
+  executed business tools. Real model spans must be `llm` when the installed
+  public integration exposes a supported binding; if it does not, model-kind
+  coverage is `blocked`, not inferred from an `ai.*` name or filled with a fake
+  span;
 - exact session/customer identity and completed pre/post-restart roots;
-- cancellation records cancelled outcome, stops upstream work, and has no
-  late success/tool-call persistence unless separately owned;
+- transport disconnect is distinct from the final application outcome; real
+  application cancellation still stops upstream work/no late side effects,
+  while pre-existing detached completion keeps its actual owner and result;
 - success, model error, persistence error, and abort each have matching stored
   terminal outcomes;
 - exact routing reaches the intended project; the empty and same-type unknown
   name/ID negatives fail as expected without readiness/creation; and the valid
   positive control starts; and
-- semantic/storage parsing and the full raw canary search pass.
+- semantic/storage parsing and the full raw canary search pass, including one
+  composed standalone Bearer/Basic plus multiline-private-key payload and a
+  proof that every final serialized stored attribute is <=1,500 UTF-8 bytes; and
+- active-span lookup, rename, sanitizer, and setter fault injection leaves the
+  response, persistence, tool count, and original exception identical; and
+- a hung-exporter injection followed by multiple completed turns starts at most
+  one process-wide exporter call, reports later attempts busy/blocked, retains
+  no per-request exporter-call storm, and leaves every response unchanged.
+
+For each terminal path, record matched uninstrumented/instrumented
+time-to-first-byte, chunk cadence, EOF, and cancel-promise settlement. The
+default trace-only finalization/export overhead budget is <=500 ms unless a
+documented application SLO proves another value. Timeout remains fail-open and
+blocks export verification.
 
 Run every non-live unit/stub/fake/build/typecheck/import/smoke/dev/static-
 generation command in a fresh process with all export-capable

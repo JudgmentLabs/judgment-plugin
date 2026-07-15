@@ -3,7 +3,7 @@
   "name": "judgment",
   "displayName": "Judgment",
   "description": "Access Judgment traces, sessions, behaviors, judges, prompts, datasets, and tests directly from your AI coding tool, with official skills for tracing, evaluation, and MCP usage best practices.",
-  "version": "1.1.8",
+  "version": "1.1.9",
   "author": {
     "name": "Judgment Labs",
     "email": "support@judgmentlabs.ai",

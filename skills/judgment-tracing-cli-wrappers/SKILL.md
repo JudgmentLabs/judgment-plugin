@@ -35,4 +35,10 @@ raw Judgment evidence across restart. Report every recipe gate as `pass`,
 `synthetic`, `real application`, or `stored Judgment`. Missing evidence is
 `blocked`. Do not collapse the edge matrix into one "error paths" verdict;
 each named subcase needs the evidence class required by its completion row or
-remains blocked.
+remains blocked. A wrapper-baseline trace must identify the root as an `agent`,
+the aggregate CLI child as a `tool`, and the root's app-defined
+`instrumentation.coverage` attribute as `wrapper_only`; names alone do not
+establish span kind or inner coverage. Payload completion also requires the
+recipe's composed credential fixtures, a serialized input/output bound of at
+most 1,500 bytes with a parseable truncation marker, and separate root- and
+child-sanitizer/classifier fail-open injections.

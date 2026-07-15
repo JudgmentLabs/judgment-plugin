@@ -7,6 +7,10 @@ description: Use when adding or auditing Judgment tracing for a finite streamed 
 
 Inspect the installed streaming framework and version, runtime target, response
 type, existing consumers/tees, persistence callbacks, and cancellation path.
+Also record the exact checked-in deployment/launcher path before editing. If the
+selected production-style topology uses Docker Compose, inspect its rendered
+configuration and exercise the checked-in Compose service; a host-only
+standalone-server run cannot substitute for that path.
 Then load exactly one binding recipe before the first edit:
 
 - Next.js **Node runtime** + Vercel AI SDK 5/6 `streamText` text response:
@@ -16,9 +20,10 @@ Then load exactly one binding recipe before the first edit:
   The script is bundled with the skill, not located in the target repository.
   Retain its JSON lifecycle evidence before editing finalization code.
   The recipe's response-binding skeleton applies only when the application
-  already owns a programmatic consumer/completion promise, or installed-source
-  evidence proves the response reader's terminal event occurs after the outer
-  AI SDK telemetry span. Do not add a consumer just to obtain that promise.
+  already owns a programmatic consumer/completion promise with documented EOF,
+  reader-error, and cancellation ownership. Do not add a consumer or manufacture
+  a promise just to use that skeleton; without an existing owner, leave the
+  finalization binding blocked.
 - Any other finite stream/deferred response with a proven completion owner:
   `references/streaming-lifecycle.md`.
 
@@ -44,3 +49,8 @@ abort, and freeze/restart outcomes with settled raw Judgment data. Report every
 recipe gate as `pass`, `fail`, `blocked`, or genuinely `not-applicable`, with
 evidence class `static`, `synthetic`, `real application`, or `stored Judgment`.
 Missing evidence is `blocked`.
+
+For platform Behaviors or Code Judges, usable evidence means a named result ID
+attached to an exact settled trace ID and inspected result payload. Zero returned
+results, a missing result, or a green-looking aggregate is not a pass and must
+not be inferred as one.

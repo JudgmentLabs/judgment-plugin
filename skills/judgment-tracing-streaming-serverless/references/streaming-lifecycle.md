@@ -21,6 +21,12 @@ stream-wrapper code from another framework.
 - Put the exact stable session ID and available customer ID on the active
   business root. Keep LLM/tool children inside it and preserve business tool
   names; exclude health/readback operations from the agent-tracing signal.
+- Set the raw business root kind to `agent`, executed business-tool children to
+  `tool`, and real model children to `llm` only through a documented public API
+  supported by the installed version. A descriptive name is not a span kind.
+  If a real model binding is unavailable, report model-kind coverage `blocked`;
+  never manufacture a fake model span. This contract must be implemented before
+  running the verification table, not discovered from that table afterward.
 - Preserve the application's existing consumer, tee, buffering, backpressure,
   persistence, retry, error, and disconnect behavior. Tracing must not add a
   stream consumer or tee. When multiple consumers already exist, identify each
@@ -28,19 +34,31 @@ stream-wrapper code from another framework.
   consumer assigned to this trace; never race finalization against the first
   consumer to finish. If ownership is undocumented, preserve behavior and mark
   the relevant completion/cancellation gate `blocked`.
-- Propagate a real client cancellation to the application's upstream work
-  **before** best-effort telemetry. Do not let a setter, sanitizer, finalizer,
-  or exporter failure delay cancellation or change the response outcome.
-- Cancellation wins terminal-state races. After cancellation is requested, do
-  not persist a success/assistant/tool-call transcript or emit a completed root
-  unless the pre-existing application intentionally owns detached completion;
-  model that detached work as a separate durable unit. Bind cancellation to the
-  persistence commit or pass its signal into persistence; a pre-write check
-  followed by an unguarded write is still racy.
+- First characterize the uninstrumented disconnect policy. If the application
+  already propagates a client disconnect to upstream work, preserve that path
+  and run it before best-effort telemetry. If a pre-existing application-owned
+  consumer intentionally continues generation or persistence, do not add an
+  upstream abort for tracing. Record the transport disconnect separately from
+  the final application outcome: the transport may be disconnected while the
+  application-owned work later succeeds or fails. Use a separate durable trace
+  only when the application already gives that work a separate durable owner.
+- Application cancellation wins terminal-state races only when the application
+  actually cancels. In that model, bind cancellation to persistence or pass its
+  signal into persistence; a pre-write check followed by an unguarded write is
+  still racy. In an intentional detached-completion model, preserve the existing
+  persistence policy, keep the root open until that owner settles, and retain a
+  transport-disconnected event/attribute alongside the eventual application
+  result. Never relabel successful detached application work as cancelled merely
+  because the client stopped reading.
 - Keep runtime telemetry fail-open after startup: trace setters, sanitizers,
   root end, and bounded flush reporting must not prevent, repeat, or replace
   application work. A telemetry failure blocks verification and stays
   observable through a safe application log/metric.
+- Put every telemetry-only active-span lookup, rename, setter, status write,
+  sanitizer/classifier, and reporter behind that fail-open guard. In particular,
+  `getCurrentSpan()` or `updateName()` outside the guard is forbidden: an
+  injected lookup/rename failure must leave generation, tools, persistence,
+  response status/body, and the original exception unchanged.
 - Require the intended existing Judgment project at startup. Require a resolved
   runtime ID and compare it with a deployment-provided expected project ID when
   available; otherwise keep exact routing blocked until a uniquely marked live probe
@@ -52,11 +70,32 @@ stream-wrapper code from another framework.
   readiness, the unknown target must not be created, and a valid-target positive
   control must start. `unset`, unrelated failure, or nonempty ID alone is not
   proof.
+- Before those runs, create a launcher/deployment ledger naming the exact
+  checked-in command, script, build artifact, env source, and runtime process,
+  plus Compose files/services when used by the selected production-style
+  topology. If that selected topology uses Docker Compose, render
+  `docker compose config` with the same files/profiles/env-file
+  and prove every required `JUDGMENT_*` variable is forwarded into the service.
+  Retain only variable names and redacted presence/equality checks, not rendered
+  credential values, and run the valid, explicitly empty, and same-type
+  unknown-project controls through that exact Compose service. For a selected
+  Compose topology, starting `.next/standalone/server.js` or another host-only
+  server can be a diagnostic, but cannot pass the deployment, routing, or export
+  gates. For a non-Compose topology, run the same controls through the exact
+  selected checked-in launcher and runtime process from the ledger.
 - Inspect resolution semantics first. If name initialization can create a
   project, use a read-only lookup and reject the unknown name before that path.
 - Retain bounded semantic request/result evidence. Use an approved sanitizer,
   a conservative credential/auth baseline that still requires privacy review,
   or strict omission that blocks semantic evaluation. Sanitize before bounding.
+  Redact multiline private-key blocks before any greedy inline/header rule, and
+  redact standalone `Bearer <token>` and `Basic <token>` values even when no
+  header label is present. Test the complete sanitizer pipeline with several
+  canaries composed in one value; isolated regex tests are insufficient. Keep
+  each final serialized stored attribute at or below 1,500 UTF-8 bytes,
+  including truncation metadata, and verify its settled raw value remains
+  parseable. Include multibyte Unicode/emoji and escape-heavy fixtures; string
+  character/code-unit counts are not byte bounds.
 - Disable uncontrolled provider/framework bulk capture. Inspect every settled
   raw provider field for accumulated history, prompts, schemas, files, and
   secrets rather than trusting a UI preview or generic capture flag.
@@ -65,6 +104,11 @@ stream-wrapper code from another framework.
   with the existing package manager, run its frozen-lock install, and record the
   diff, hashes, and versions again. Unexplained unrelated upgrades block
   completion.
+- Do not use an underscored or otherwise documented-private instrumentation SDK
+  API unless the exact dependency version is lockfile-pinned and an executable
+  production-bundle test proves that API on every required path. Without both,
+  use a public API or mark the binding `blocked`; a successful typecheck or mock
+  is not proof.
 
 ## Framework-specific implementation gate
 
@@ -77,14 +121,37 @@ Identify from the installed version:
 5. the runtime primitive that awaits bounded export before EOF, freeze, or
    shutdown in the deployment being tested.
 
-Use one idempotent terminal finalizer shared by success, model/tool error,
-persistence failure, synchronous construction failure, and cancellation. It
-settles application work, awaits framework children, records the terminal
-outcome, ends the root, and awaits bounded export exactly once.
-Idempotent means one memoized promise assigned before the first await and
-returned to every terminal caller; a boolean early-return that lets a second
-caller continue while finalization is pending fails. The real application
-terminal-state rule decides the winning outcome before this call.
+Keep real settlement and trace finalization separate. The application's existing
+owner must settle generation/persistence and await the real framework-child
+completion barrier under its existing application timeout/retry policy. Never
+put that promise inside a telemetry `Promise.race`, trace-only timeout, or
+detached observer. Only after it settles may the owner call one idempotent
+trace-only finalizer shared by success, model/tool error, persistence failure,
+synchronous construction failure, and real cancellation. That finalizer records
+the terminal outcome, ends the root, and attempts bounded export exactly once.
+Idempotent means one memoized trace-finalization promise assigned before its
+first await and returned to every settled terminal caller; a boolean
+early-return that lets a second caller continue while trace finalization is
+pending fails. The real application terminal-state rule decides the outcome
+before this call. If no existing owner can await real settlement, the binding is
+`blocked`; a telemetry deadline cannot be used to manufacture one.
+
+Give trace-only finalization/export an explicit latency budget. Unless an
+application-owned response/EOF SLO proves and records a different value, the
+default bound is at most 500 ms. Measure matched uninstrumented and instrumented
+time-to-EOF (and disconnect return behavior) for every terminal path; tracing
+must not add more than the approved budget. A timeout is fail-open for the
+application and blocks export verification. Do not use a five-second telemetry
+timeout merely because it eventually exports; that delay is user-visible. This
+budget begins only after real application/framework settlement completes and
+must never truncate or detach it.
+
+A caller timeout cannot cancel an already-running exporter. Keep exporter calls
+process-wide single-flight: while one call remains in flight, later operations
+must return a reported busy failure and mark their export evidence `blocked`,
+not start or queue another exporter call. Prove with a hung-flush injection that
+repeated completed operations start only one exporter call, retain their exact
+application outcomes, and expose the blocked/busy condition.
 
 For every unrecovered application failure, record a fixed application-owned
 error category in bounded output and OpenTelemetry `ERROR` status. Cancellation
@@ -141,12 +208,21 @@ Use `not-applicable` only when the architecture truly lacks a gate. Missing
 hooks, credentials, traffic, or stored evidence are `blocked`.
 
 Safely inject independent failures into root and important child scope
-start/enter/exit, every setter/status write, sanitizer/classifier, reporter,
-root end, sync-guard async misuse, flush throw/rejection, and flush timeout. Each
+start/enter/exit, active-span lookup, span rename, every setter/status write,
+sanitizer/classifier, reporter, root end, sync-guard async misuse, flush
+throw/rejection, and flush timeout. Each
 subcase must leave generation, persistence, cancellation, retry, response, and
 original exceptions single-run and unchanged. Observe after cancellation for a
 named horizon long enough that the original work would have completed; prove no
 late tool/persistence side effects or identify their separate durable owner.
+Also inject a real application/framework settlement that takes longer than 500
+ms. Its existing owner must still await and preserve the exact result; only the
+subsequent trace-write/end/export attempt is subject to the telemetry deadline.
+
+When platform Behaviors or Code Judges are used, retain the exact settled trace
+ID, Behavior/Judge version, result ID, and inspected result payload. A query that
+returns zero results, a missing result, or an aggregate without trace-level
+provenance is missing evidence, not a green result.
 
 Run every non-live unit/stub/fake/build/typecheck/import/smoke/dev/static-
 generation command in a fresh process with all

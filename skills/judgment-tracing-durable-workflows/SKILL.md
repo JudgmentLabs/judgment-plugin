@@ -26,6 +26,29 @@ Do not load the long reference by default. Read only the named section of
 The binding recipe remains the only implementation path. Optional sections add
 diagnostics and proof criteria, not another adapter.
 
+Use Judgment's documented public span types/kinds. Producer/control-write roots
+and durable activities that do not run an agent phase are `function` (or the
+pinned SDK's named documented general equivalent). Only a durable root that
+actually owns an agent phase is `agent`; merely containing one model call does
+not make a control/activity root an agent. Real model children are `llm`, and
+executed business-tool children are `tool`. Names do not establish kinds. Every
+tracing operation the implementation actually calls must be fail-open and
+independently fault-injected. Current-span lookup, rename, and a manual
+kind/type setter are required subcases only when that call exists; do not add
+one merely to satisfy the matrix. Private or underscored SDK APIs are forbidden
+unless the exact dependency is pinned and a production-shaped executable
+conformance test proves the call.
+
+Record a checked-in launcher/deployment ledger for the producer and every
+exporting worker. Positive, explicitly-empty, and same-type unique-unknown
+routing controls must use those exact commands/services and env wiring. If the
+real topology uses Compose, run the real checked-in Compose services and retain
+the sanitized resolved config; a host-only producer or worker is not deployment
+proof. Payload evidence is sanitized before serialization, with multiline
+private-key and standalone `Bearer`/`Basic` removal ordered before greedy
+composed rules, and capped at 1,500 UTF-8 bytes per stored IO attribute or a
+lower documented destination limit.
+
 ## Completion rule
 
 Do not claim completion from a build, interceptor setup, scratch span, or UI
@@ -34,3 +57,8 @@ events with settled raw Judgment roots, and report every recipe gate as
 `pass`, `fail`, `blocked`, or genuinely `not-applicable`, with evidence class
 `static`, `synthetic`, `real application`, or `stored Judgment`. Missing
 evidence is `blocked`.
+
+A Judgment Behavior, Judge, or Test counts as supplemental evidence only when
+the exact inspectable result comes from this controlled run and is tied to its
+trace IDs. Definitions, enabled configuration, and aggregate scores without
+current-run trace-linked results do not count.

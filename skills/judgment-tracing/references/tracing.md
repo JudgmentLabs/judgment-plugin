@@ -183,7 +183,11 @@ happen, create one completion barrier that does all of the following in order:
 2. let the framework's telemetry spans finish;
 3. end the application root; and
 4. make a bounded, observable `await Tracer.forceFlush()` attempt before the
-   runtime is allowed to freeze or exit.
+   runtime is allowed to freeze or exit. For a user-visible request/stream,
+   declare an outer wall-clock deadline from the application's latency budget;
+   500 ms is an upper-bound example, not a universal SLO. The timeout argument
+   accepted by a synchronous SDK method is not itself a total bound. Measure the
+   response/EOF delta with flush success, rejection, hang, and timeout.
 
 Connect that promise to a lifecycle mechanism the runtime actually waits for,
 such as a response-stream finalizer, `waitUntil`, `after`, a job acknowledgement,
@@ -200,12 +204,6 @@ returning. Use the fail-open helper from
 and adapt names and response types to the repository:
 
 ```python
-import asyncio
-
-def set_turn_trace_input(request: ChatRequest) -> None:
-    Tracer.set_session_id(request.session_id)
-    Tracer.set_input(safe_turn_input(request))
-
 @Tracer.observe(
     span_type="agent",
     span_name="agent.chat_turn",
@@ -214,11 +212,20 @@ def set_turn_trace_input(request: ChatRequest) -> None:
 )
 async def traced_turn(request: ChatRequest) -> ChatResult:
     best_effort_trace_write(
-        "turn input", lambda: set_turn_trace_input(request)
+        "turn session", lambda: Tracer.set_session_id(request.session_id)
+    )
+    set_safe_trace_input(
+        "turn input",
+        lambda: {"request": request.message},
+        ("request",),
+        approved_redact_text,
     )
     result = await run_agent_turn(request)
-    best_effort_trace_write(
-        "turn output", lambda: Tracer.set_output(safe_turn_output(result))
+    set_safe_trace_output(
+        "turn output",
+        lambda: {"ok": True, "reply": result.reply},
+        ("ok", "reply"),
+        approved_redact_text,
     )
     return result
 
@@ -227,22 +234,18 @@ async def chat(request: ChatRequest):
     try:
         return await traced_turn(request)  # the business root ends on return/raise
     finally:
-        try:
-            flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
-            if not flushed:
-                report_telemetry_failure(
-                    "chat flush", TimeoutError("flush timed out")
-                )
-                # Preserve behavior, but do not claim restart-safe export.
-        except Exception as error:
-            # Telemetry failure must not replace a valid result or the
-            # application's original exception.
-            report_telemetry_failure("chat flush", error)
+        # Shared helper: sync force_flush runs in a worker; asyncio.wait_for
+        # supplies the app-declared wall-clock deadline. This example's SLO
+        # permits at most 500 ms of request-path telemetry delay.
+        await best_effort_force_flush_with_deadline(500)
 ```
 
 Do not copy `agent.chat_turn`, request types, or helper names literally. The
-important ordering is root completion followed by an awaited bounded flush in
-the outer lifecycle owner.
+important ordering is root completion followed by the shared structure-first
+payload helper and an awaited outer-deadline flush in the lifecycle owner. Copy
+the helpers from
+[instrumentation-safety-and-evidence.md](instrumentation-safety-and-evidence.md),
+then adapt the allowed fields and approved text sanitizer to the application.
 
 Verify the barrier adversarially: complete a real streamed turn and immediately
 kill or restart the worker. The completed pre-restart turn and the first
@@ -421,15 +424,25 @@ active tool span:
 def write_file(self, path: str, content: str) -> dict[str, object]:
     # Do not record self or the file body. Apply the application's path policy
     # before recording even the path.
-    best_effort_trace_write("write-file input", lambda: Tracer.set_input({
-        "path": safe_relative_path(path),
-        "content_bytes": len(content.encode()),
-    }))
+    set_safe_trace_input(
+        "write-file input",
+        lambda: {
+            "path": safe_relative_path(path),
+            "content_bytes": len(content.encode()),
+        },
+        ("path", "content_bytes"),
+        approved_redact_text,
+    )
     result = persist_file(path, content)
-    best_effort_trace_write("write-file output", lambda: Tracer.set_output({
-        "path": safe_relative_path(path),
-        "bytes_written": result["bytes_written"],
-    }))
+    set_safe_trace_output(
+        "write-file output",
+        lambda: {
+            "path": safe_relative_path(path),
+            "bytes_written": result["bytes_written"],
+        },
+        ("path", "bytes_written"),
+        approved_redact_text,
+    )
     return result
 ```
 
@@ -459,11 +472,16 @@ signature rather than inventing a parameter. Do not copy configuration fields
 from another SDK major version.
 
 Then preserve useful tool observability deliberately. If the integration keeps
-its tool span active while the tool executes, set a sanitized input/output on
-that current span from the tool implementation. Otherwise add one manual child
+its tool span active while the tool executes, obtain and enrich that current
+span only inside the fail-open trace-only guard; a failed current-span lookup or
+any rename actually used is telemetry failure, not a tool failure. Otherwise add one manual child
 span with automatic capture disabled. Do not create a second tool span merely
 to duplicate the framework span; first verify whether the existing active span
-can be enriched.
+can be enriched. Use the documented public span-type/kind API for the exact
+installed SDK. Do not depend on a private/underscored method unless the version
+is pinned and its behavior has an executable contract test. Do not add an
+explicit kind setter when the public wrapper/decorator already sets the correct
+kind; fault such setters only when the implementation really calls one.
 
 Verification must inspect raw stored `judgment.input` and `judgment.output` on
 the application root, model spans, and tool spans. Exercise at least one
@@ -717,6 +735,10 @@ https://docs.judgmentlabs.ai/documentation/performance/tracing#distributed-traci
 | Blanket-wrapping persistence helpers           | Noisy roots and excessive payload capture        | Trace only high-value operations with bounded attributes               |
 | Tracing session/status readback routes          | Verification and polling calls outnumber the agent turns they inspect | Leave read-only health/status/session/transcript endpoints untraced unless they perform independent meaningful work; reconcile expected root counts |
 | Env vars present only on the host               | Container or worker exports nothing              | Forward Judgment variables into every runtime that performs work       |
+| Testing a direct host server instead of the checked-in deployment | A diagnostic path works while the real service exports nothing | Record a launcher ledger; inspect the rendered Compose/deployment config and exercise the exact valid, empty, and unknown-project production commands |
+| Multi-second flush timeout on a user-visible path | Tracing preserves bytes but materially delays the response or EOF | Put synchronous flush behind a single-flight worker and enforce the app-declared outer wall-clock deadline; 500 ms is an example ceiling, not a universal SLO; test busy/hang/rejection/timeout parity |
+| Active-span lookup outside the trace-only guard | A telemetry lookup fault becomes a tool or request failure | Guard the lookup itself; inject lookup and setter faults actually used, including rename/type/kind only when those calls exist |
+| Treating zero Behavior/Judge results as green   | A privacy or structure failure can exist with no recorded evaluation | Require exact current-run result rows tied to exact trace IDs; otherwise mark the check blocked |
 | Missing `session_id` for chat apps             | Conversations do not group in Sessions           | Set `session_id` on each root trace in the conversation               |
 | Switching projects mid-trace                   | Spans may route incorrectly or fail to switch    | Route before the root span starts                                     |
 | Missing distributed propagation                | Downstream service appears as an unrelated trace | Inject and continue trace context across service boundaries           |

@@ -21,7 +21,10 @@ Write down before editing:
 3. every suspend/checkpoint: approval, timer, queue handoff, or worker boundary;
 4. the business work and possible retries on each side of those boundaries;
 5. the process that can own, end, and export each proposed root; and
-6. status/health/read routes that must be excluded or sampled separately.
+6. status/health/read routes that must be excluded or sampled separately; and
+7. the checked-in launcher/deployment ledger: path and hash, exact producer and
+   worker commands or Compose services, resolved env/project/endpoint wiring,
+   readiness checks, and guaranteed cleanup.
 
 Never make a short HTTP request own work that continues after its response.
 Never hold a span open across an indefinite durable wait.
@@ -64,6 +67,14 @@ it does not repair a malformed trace.
   dotenv exists, and must create nothing. The valid-target positive control
   must start. `unset`, an unrelated crash, or a nonempty ID alone does not pass.
   Always clean up the process/container.
+- Run the valid, explicitly-empty, and same-type unique-unknown controls through
+  the same checked-in launcher and otherwise-identical topology. When the
+  selected production-style topology uses Compose, record the checked-in
+  Compose path/service names,
+  retain a sanitized `docker compose -f <file> config`, and exercise the real
+  producer plus every exporting worker service. For that selected Compose
+  topology, a host-only server/worker invocation is diagnostic and cannot pass
+  deployment routing.
 - Inspect resolution semantics first. If name initialization can create a
   project, use a read-only lookup and reject the unknown name before that path.
 - Start a fresh application root at the segment/activity boundary. Confirm the
@@ -81,6 +92,16 @@ it does not repair a malformed trace.
 - Keep real LLM/tool work inside the owning root with business names and useful
   bounded IO/error plus honest provider/model/token/cost when available. Do not
   duplicate framework spans with manual spans.
+- Store producer/control-write roots and non-agent durable activities with
+  Judgment's documented `function` span type/kind (or the pinned SDK's named
+  documented general equivalent). Use `agent` only for a durable root that
+  actually owns an agent phase; one contained model call alone does not make
+  the root an agent. Use `llm` only for a real model call and `tool` only for an
+  executed business tool. Verify the raw stored kinds;
+  names and generic OpenTelemetry span kinds are not substitutes. Use the
+  pinned installed public SDK only. A private or underscored API is forbidden
+  unless that exact version/call has its own executable production-shaped
+  conformance proof.
 - Record retry attempt and normalized outcome. Preserve failed and successful
   attempts without replay duplicates or double instrumentation.
 
@@ -89,9 +110,13 @@ it does not repair a malformed trace.
 Use one outcome boundary, not separate success and error implementations:
 
 1. Disable automatic input/output capture on the observed business function.
-2. Guard trace setters, sanitizer/classifier calls, root finalization,
-   reporters, and flush reporting. Telemetry failures remain observable but
-   cannot change durable work.
+2. Guard every tracing operation the implementation actually uses: scope
+   lifecycle, trace setters, sanitizer/classifier calls, root finalization,
+   reporter, and flush reporting, plus active-span lookup, rename, or a manual
+   span-type/kind setter when present. Telemetry failures remain observable but
+   cannot change durable work. Do not look up a current span outside the guard
+   and protect only the later write, and do not add a rename or manual setter
+   merely to create a fault-injection case.
 3. On application failure, record a stable semantic code/status inside the
    root and keep the original exception only in memory.
 4. End the observed root, then rethrow the original from the outer activity or
@@ -110,11 +135,15 @@ be `ERROR` while a later successful attempt/root remains success; never rewrite
 the earlier child or the final workflow outcome to force agreement.
 
 Safely inject independent failures into producer and activity/segment scope
-start/enter/exit, every trace setter/status write, sanitizer/classifier,
+start/enter/exit and every trace setter/status write, sanitizer/classifier,
 reporter/finalizer, flush throw/rejection, and flush timeout supported by each
-runtime. For every subcase, prove the durable operation runs once and preserves
-acknowledgement, persistence, retry/replay, approval/resume, and original
-exceptions. Do not aggregate subcases; unexercised cases are `blocked`.
+runtime. Also inject active-span lookup, rename, and manual span-type/kind
+setter failures separately when the implementation actually calls them. An
+absent operation is genuinely `not-applicable`; do not add it just to exercise
+the matrix. For every applicable subcase, prove the durable operation runs once
+and preserves acknowledgement, persistence, retry/replay, approval/resume, and
+original exceptions. Do not aggregate subcases; an applicable but unexercised
+case is `blocked`.
 
 ## 5. Apply one payload policy
 
@@ -125,25 +154,36 @@ Choose and name exactly one mode:
   required; or
 - strict omission, which blocks semantic behavior evaluation.
 
-Sanitize the final composed value before bounding. Leave margin below the
-platform's attribute limit for object serialization and prove settled
-`judgment.input`/`judgment.output` still parse as the intended structure. In
-controlled traffic, place a benign semantic marker plus non-real OpenAI-style
+Project/redact structured fields first. In composed text, remove complete
+multiline private-key blocks and standalone `Bearer TOKEN` / `Basic TOKEN`
+values before any greedy line, header, or key/value rule. Then sanitize the
+remaining final composed value. Serialize only afterward and cap each stored
+`judgment.input`/`judgment.output` at **1,500 UTF-8 bytes**, or a lower
+documented destination limit. Reduction must preserve valid structured data
+with an explicit truncation marker; prove the settled value parses and remains
+within the cap. In controlled traffic, place a benign semantic marker plus
+non-real OpenAI-style
 `sk-`, GitHub-style `ghp_` and `github_pat_`, `Authorization: ApiKey`,
 `Authorization: Digest`, custom `Proxy-Authorization`, `HTTP_AUTHORIZATION`,
 `X-Api-Key`, `JUDGMENT_API_KEY`, `AWS_SECRET_ACCESS_KEY`, camelCase/prefixed
 secret/token/password keys, cookie/session tokens, URL credentials, and
-private-key canaries in input, result/error, and beyond-bound positions. Search
-every settled raw root, child, event, and resource attribute. The benign marker
-must survive; all canaries and unapproved history/schema/file bodies must be
-absent.
+private-key canaries in input, result/error, and beyond-bound positions. Include
+the exact standalone fixtures `Bearer STANDALONE_BEARER_CANARY_0123456789` and
+`Basic QkFTSUNfQ0FOQVJZXzEyMzQ1Njc4OTA=` plus a multiline private-key block
+containing an authorization line. Search every settled raw root, child, event,
+and resource attribute. The benign markers must survive; the whole key block,
+both standalone credentials, all other canaries, and unapproved
+history/schema/file bodies must be absent.
 
 ## 6. Prove the stored result
 
 Run the real production-style path through submit, pre-suspend work, the actual
 approval/timer/signal, post-suspend completion, worker restart, and a retry when
 that architecture supports one. Record the traffic events and exact workflow
-ID, wait for ingestion to settle, then reconcile raw Judgment data.
+ID, wait for ingestion to settle, then reconcile raw Judgment data. Run it with
+the exact checked-in launcher/deployment ledger. Where Compose is the real
+topology, the scenario and all routing controls use the real named services and
+resolved checked-in config, never host-only substitutes.
 
 Require:
 
@@ -156,8 +196,13 @@ Require:
 - pre/post-suspend and pre/post-restart work remain in one workflow session;
 - attempts match recorded application retries without duplicates;
 - LLM/tool evidence is useful and polling/transport noise does not dominate;
+- raw stored kinds are `function` (or the pinned SDK's named documented general
+  equivalent) on producer/control and non-agent durable roots, `agent` only on
+  actual agent-phase roots, `llm` on real model calls, and `tool` on executed
+  business tools;
 - payload canaries pass in settled raw attributes and structured root IO
-  remains parseable; and
+  remains parseable and no serialized IO attribute exceeds 1,500 UTF-8 bytes
+  or its lower documented destination limit; and
 - the last completed pre-kill root is present after its bounded post-root flush.
 
 For every complete root tree, normalize units and derive timestamp precision
@@ -186,3 +231,9 @@ Use `not-applicable` only when the architecture truly lacks the branch.
 Unavailable traffic, credentials, hooks, raw spans, or failed export is
 `blocked`, not a pass. Use the optional deep reference's completion table only
 when producing the final evidence report.
+
+Behaviors, Judges, and Tests may supplement this deterministic workflow-event
+reconciliation. Count one only when its exact recorded result is from the
+current controlled run, exposes the matching producer/activity trace ID, and is
+inspectable at result level. A definition, enabled configuration, or aggregate
+score without trace-linked current-run results is `blocked` as evidence.

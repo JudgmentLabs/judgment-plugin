@@ -22,7 +22,10 @@ Identify before editing:
 4. every member of the real decision union, including plan, tool, compaction,
    retry, error, and finish only where they actually exist;
 5. start/resume request ownership and background-loop launch; and
-6. the real model path, tools, restart path, and process-instance signal.
+6. the real model path, tools, restart path, and process-instance signal; and
+7. the checked-in launcher/deployment ledger: path/hash, exact command or
+   Compose service, resolved env/project/endpoint wiring, readiness check, and
+   guaranteed cleanup.
 
 One durably saved iteration outcome is one fresh trace. This includes a failed
 attempt only when that failure is itself persisted as the iteration outcome.
@@ -48,10 +51,21 @@ already-saved iterations valid.
   richer semantic result exists.
 - Model and tool spans are children of that iteration. Use real business tool
   names and do not duplicate framework and manual spans.
+- Choose kind from the work represented, not the containing agent
+  architecture. Use `agent` for a root that actually performs an agent
+  decision/phase. Use Judgment's documented `function` kind (or the pinned
+  SDK's named documented general equivalent) for orchestration,
+  checkpoint/control, start/resume, or bookkeeping roots that do not. Use
+  `llm` only for a real model call and `tool` only for an executed business
+  tool. Verify raw kinds; names and generic OpenTelemetry kinds do not prove
+  them. Use only documented public APIs from the pinned installed SDK. A
+  private or underscored API is forbidden without its own pinned,
+  production-shaped executable conformance proof.
 
-Compaction and finish are normal iteration roots when those branches exist.
-Start/resume writes may be separate short traces. Exclude or sample health and
-status polling.
+Compaction and finish are normal iteration roots when those branches exist;
+their kind still follows the work the root actually performs. Start/resume
+writes may be separate short `function`/general traces. Exclude or sample
+health and status polling.
 
 ## 3. Detach background work correctly
 
@@ -74,8 +88,13 @@ boot UUID must never replace the durable run/session ID.
 
 Use one observed iteration adapter with automatic IO disabled:
 
-1. Guard trace setters, sanitizers/classifiers, reporters, finalization, and
-   flush reporting. Telemetry remains fail-open after valid startup.
+1. Guard every tracing operation the implementation actually uses: scope
+   lifecycle, trace setters, sanitizer/classifier, reporter, finalizer, and
+   flush reporting, plus active-span lookup, rename, or a manual span-type/kind
+   setter when present. Telemetry remains fail-open after valid startup. Do not
+   resolve a current span outside the guard and protect only the subsequent
+   mutation, and do not add a rename or manual setter merely to create a
+   fault-injection case.
 2. Let the model decide, execute the real action, apply the repository's state
    transition, and persist it exactly once.
 3. Record the branch-specific bounded semantic output only after the existing
@@ -103,11 +122,15 @@ state intact, but it blocks that checkpoint's tracing claim. The telemetry
 reporter must also be fail-open.
 
 Safely inject independent failures into iteration-root and model/tool-child
-scope start/enter/exit, every trace setter/status write, sanitizer/classifier,
-reporter/finalizer, flush throw/rejection, and flush timeout supported by the
-runtime. Each subcase must leave the model/action/save path single-run and
-preserve checkpoints, retry/recovery, resume, final result, and original
-exceptions. Do not aggregate subcases; unexercised cases are `blocked`.
+scope start/enter/exit and every trace setter/status write,
+sanitizer/classifier, reporter/finalizer, flush throw/rejection, and flush
+timeout supported by the runtime. Also inject active-span lookup, rename, and
+manual span-type/kind setter failures separately when the implementation
+actually calls them. An absent operation is genuinely `not-applicable`; do not
+add it just to exercise the matrix. Each applicable subcase must leave the
+model/action/save path single-run and preserve checkpoints, retry/recovery,
+resume, final result, and original exceptions. Do not aggregate subcases; an
+applicable but unexercised case is `blocked`.
 
 ## 5. Configure and limit capture
 
@@ -127,16 +150,26 @@ exceptions. Do not aggregate subcases; unexercised cases are `blocked`.
   accepting work, the unknown target must not be created, and a valid-target
   positive control must start. `unset`, unrelated failure, or nonempty ID alone
   is not proof.
+- Use the same checked-in launcher/service and otherwise-identical
+  configuration for the valid, explicitly-empty, and unique-unknown controls.
+  If the selected production-style topology uses Compose, record the checked-in
+  Compose path and agent service, retain a sanitized
+  `docker compose -f <file> config`, and exercise that real service. For that
+  selected Compose topology, a host-only script or development launcher is
+  diagnostic, not deployment proof.
 - Inspect resolution semantics first. If name initialization can create a
   project, use a read-only lookup and reject the unknown name before that path.
 - Disable provider bulk capture that retains accumulated history, static/system
   prompts, schemas, files, reports, or credentials in any attribute.
 - Preserve real provider/model/token/cost when safe. A metadata-only manual LLM
   span is an incomplete privacy fallback, not full behavior evidence.
-- Sanitize the final composed value, not only its ingredients, then bound it.
-  Do not keep an unsanitized duplicate field. Leave margin below the platform's
-  attribute limit for object serialization and prove settled
-  `judgment.input`/`judgment.output` still parse as the intended structure.
+- Project/redact structured fields first. In composed text, remove complete
+  multiline private-key blocks and standalone `Bearer TOKEN` / `Basic TOKEN`
+  values before any greedy line/header/key-value rule. Then sanitize the final
+  composed value and keep no unsanitized duplicate. Serialize only afterward;
+  each stored `judgment.input`/`judgment.output` is at most **1,500 UTF-8
+  bytes**, or a lower documented destination limit, and remains parseable. Use
+  a valid structured truncation marker rather than slicing serialized JSON.
 
 Choose an approved sanitizer, a conservative credential/auth baseline that
 still requires privacy review, or strict omission that blocks semantic
@@ -149,6 +182,10 @@ private-key canaries before/beyond the bound and in model/tool error,
 compaction, and final output where those branches exist. After restart, search
 all settled raw attributes for accumulated history, static prompts, schemas,
 reports, files, and canaries.
+The exact matrix includes `Bearer STANDALONE_BEARER_CANARY_0123456789`, `Basic
+QkFTSUNfQ0FOQVJZXzEyMzQ1Njc4OTA=`, and a multiline private-key block containing
+an authorization line. The whole block and both standalone auth values must be
+absent while adjacent benign markers survive, proving the required ordering.
 
 ## 6. Prove the stored result
 
@@ -156,7 +193,10 @@ Use the real runtime and model. Start one run, let multiple iterations and a
 tool finish, kill immediately after a durable checkpoint, resume the same run,
 and reach its actual terminal branch. Exercise compaction and retry only when
 the repository exposes them. Record the exact run ID and persisted completed
-iterations, then wait for ingestion and reconcile raw Judgment data.
+iterations, then wait for ingestion and reconcile raw Judgment data. Run this
+through the checked-in launcher/deployment ledger; when Compose is the real
+topology, use the real named service and resolved config, not a host-only
+substitute.
 
 Require:
 
@@ -168,8 +208,13 @@ Require:
 - changed boot UUID with stable run/session ID;
 - visible compaction/retry/finish only according to the real decision union;
 - one useful span per executed tool and honest real LLM metadata;
+- raw stored kinds are `agent` for roots that actually perform an agent
+  decision/phase, `function` (or the pinned SDK's named documented general
+  equivalent) for orchestration/checkpoint/control/bookkeeping roots, `llm` for
+  real model calls, and `tool` for executed business tools;
 - no unapproved payloads or canaries in any raw attribute, with stored
-  structured root IO still parseable; and
+  structured root IO still parseable and no serialized IO attribute larger
+  than 1,500 UTF-8 bytes or its lower documented destination limit; and
 - the last completed pre-kill root present after its bounded post-root flush.
 
 Normalize units, derive timestamp precision from raw stored values or documented
@@ -196,3 +241,9 @@ Monitoring and require zero unexplained test-generated roots.
 
 Use `not-applicable` only for a branch the architecture genuinely lacks.
 Missing real traffic, credentials, raw evidence, or export is `blocked`.
+
+Behaviors, Judges, and Tests may supplement, but never replace, persisted
+iteration reconciliation. Count one only when the exact recorded result comes
+from this controlled run, exposes the matching iteration trace ID, and is
+inspectable at result level. A definition, enabled configuration, or aggregate
+score without trace-linked current-run results is `blocked` as evidence.
