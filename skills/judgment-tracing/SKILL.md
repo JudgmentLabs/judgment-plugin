@@ -17,7 +17,11 @@ Follow these principles for all Judgment work:
 1. **Docs first**: Fetch current Judgment docs and refer to reference files before implementing SDK patterns from memory.
 2. **Instrument the real path**: Add tracing to the functions, tools, and LLM calls the app actually executes.
 3. **Route tracing integrations first**: When the user asks to add Judgment to an app, inspect the real execution path and invoke the matching focused tracing skill before editing. Do not automatically load the long general tracing reference for an architecture handled by a focused skill.
-4. **Stay on the tracer surface**: In most cases, use Judgment's tracer, wrappers, and documented integrations directly. Do not reach into underlying provider objects or create additional wrapper layers unless the current docs require it or a real instrumentation gap remains after using the supported integration.
+4. **Use supported integrations conditionally**: Prefer Judgment's documented
+   integration only after checking the installed version's capture controls.
+   If it cannot disable unapproved histories, files, schemas, prompts, or
+   secrets, use safe manual spans supported by that version or report the
+   coverage blocked. Metadata convenience never overrides payload safety.
 5. **Start small**: For evaluations, begin with a focused example set and one scorer before expanding.
 6. **Use the right scorer**: Use prompt/hosted scorers for rubric-based judgment and Python code judges for deterministic logic, custom dependencies, or trace inspection.
 7. **Keep credentials out of chat**: Ask the user to set `JUDGMENT_API_KEY` and `JUDGMENT_ORG_ID` locally rather than pasting secrets.
@@ -77,8 +81,9 @@ Do not report completion until all six are backed by evidence:
    and the exact stable session ID.
 2. **Routing:** require an explicit intended project and propagate key,
    organization, project, and every configured endpoint override to each real
-   exporter process. Unset project configuration must fail before serving; no
-   guessed fallback or silent no-op tracer.
+   exporter process. Prove the real startup fails with the project set to an
+   empty value even when dotenv files exist; an `unset` test that dotenv can
+   repopulate is not evidence. No guessed fallback or silent no-op tracer.
 3. **Root evidence:** the root contains safe, bounded, faithful semantic input
    and final result/error, not only metadata or omission markers.
 4. **Capture policy:** inspect the installed integration's actual capture
@@ -93,6 +98,13 @@ Do not report completion until all six are backed by evidence:
    as static, synthetic, real application, or stored Judgment evidence. A
    scratch span, stubbed provider, build, typecheck, or existence-only query is
    not live end-to-end verification.
+
+The final response must include one row per gate with `pass`, `fail`, or
+`blocked`, the evidence class, and the exact evidence used. If the provider was
+stubbed, the check is synthetic. If a negative command exited zero or a raw
+attribute was not inspected, that gate failed or is blocked. Never open with
+“live” or “end-to-end verified” unless every required real-application and
+stored-evidence gate passed.
 
 ## Use Case References
 
