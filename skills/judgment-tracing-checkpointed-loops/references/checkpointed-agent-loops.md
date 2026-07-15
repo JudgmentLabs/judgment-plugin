@@ -1,4 +1,4 @@
-# Checkpointed Long-Running Agent Loops
+# Judgment Tracing for Checkpointed Long-Running Agent Loops
 
 Use this guide when an agent repeatedly reasons, calls at most one or a few
 tools, persists state, and continues until a final decision. It applies to
@@ -135,15 +135,12 @@ async step(run: RunState): Promise<RunState> {
         Tracer.setOutput(summarizeIterationOutcome(decision, result, run));
         return { state: run, error: undefined };
       } catch (error) {
-        const message = safeError(error);
-        run.status = "failed";
-        run.error = message;
-        await this.store.saveRun(run);
-        Tracer.setOutput({ status: "failed", error: message });
+        const code = classifyIterationError(error);
+        Tracer.setOutput({ status: "failed", errorCode: code });
         // Record a normalized safe exception inside the span. Returning the
         // original exception only in memory prevents the decorator from
         // automatically copying its raw message into trace attributes.
-        Tracer.setError(new Error("agent_iteration_failed"));
+        Tracer.setError(new Error(code));
         return { state: run, error };
       }
     },
@@ -163,6 +160,14 @@ async step(run: RunState): Promise<RunState> {
   return outcome.state;
 }
 ```
+
+Do not invent or overwrite durable failure state merely for tracing. After the
+observed scope ends, let the application's existing retry, failure-transition,
+checkpoint, and recovery code handle the original exception exactly as it did
+before instrumentation. If the repository already has a durable
+`markIterationFailed` transition, call that from its existing owner; do not add
+`run.status = "failed"` to the tracing adapter when it could suppress retries
+or change resume behavior.
 
 `boundedText`, `summarizeState`, the `safe*` outcome helpers, and `safeError`
 are placeholders for real redaction and size policies. Do not store full

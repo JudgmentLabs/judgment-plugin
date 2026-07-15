@@ -6,7 +6,7 @@ description: Use when adding or auditing Judgment tracing for a long-running aut
 # Judgment Tracing for Checkpointed Agent Loops
 
 Read
-`../judgment-tracing/references/tracing-checkpointed-agent-loops.md`
+`references/checkpointed-agent-loops.md`
 completely before editing. Treat a durably saved decision iteration—not the
 process lifetime or initial HTTP request—as the default trace boundary.
 

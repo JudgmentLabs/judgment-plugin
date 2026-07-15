@@ -1,4 +1,4 @@
-# Next.js + Vercel AI SDK 5/6 Text-Stream Tracing
+# Judgment Tracing for Next.js and Vercel AI SDK 5/6 Text Streams
 
 Use the copyable code in this recipe only when a Next.js **Node-runtime** route
 uses Vercel AI SDK 5 or 6 and returns a `streamText` /
@@ -113,6 +113,7 @@ tracer inherits it. Set session and customer context only after the root is
 active.
 
 ```typescript
+let asynchronousFailure: unknown;
 const result = Tracer.getOTELTracer().startActiveSpan(
   // Use this application's stable business name, not a generic copied name.
   "deskflow.turn",
@@ -133,10 +134,21 @@ const result = Tracer.getOTELTracer().startActiveSpan(
         recordOutputs: false,
       },
       async onFinish({ response, text }) {
-        await persistCompletedTurn(response);
-        Tracer.setOutput({
-          text: sanitizeAndBoundTraceText(text),
-        }, rootSpan);
+        try {
+          await persistCompletedTurn(response);
+          Tracer.setOutput({
+            text: sanitizeAndBoundTraceText(text),
+          }, rootSpan);
+        } catch (error) {
+          // Keep the original only in memory for the terminal finalizer. The
+          // stored trace receives a normalized code, not raw DB/provider text.
+          asynchronousFailure = error;
+          Tracer.setError(safeTraceError(error), rootSpan);
+          Tracer.setOutput({
+            status: "error",
+            errorCode: safeTraceErrorCode(error),
+          }, rootSpan);
+        }
       },
       onError({ error }) {
         Tracer.setError(safeTraceError(error), rootSpan);
@@ -333,27 +345,22 @@ and the bounded `Tracer.forceFlush()` attempt has settled. A successful flush
 makes an immediately following process kill wait for export; a failed attempt
 must be logged and must make the later stored-trace verification fail.
 
-Start the internal stream consumption while the application root is active and
-return its completion promise with an idempotent finalizer. Wire a real abort
-signal into the model call; cancelling only the returned response reader does
-not stop the separate consuming branch or upstream generation.
+Create the stream while the application root is active, but give it exactly one
+consumer: the response-body reader. Return an idempotent finalizer owned by the
+terminal response branch. Wire a real abort signal into the model call.
 
 ```typescript
 // In the agent module, inside startActiveSpan(...):
 let finalization: Promise<void> | undefined;
 const abortController = new AbortController();
+// Reuse asynchronousFailure from the enclosing turn/root scope above.
 const result = streamText({
-  // onFinish persists and sets root output but does not end the root.
+  // onFinish persists and sets root output but does not end the root. If the
+  // application's existing policy catches a persistence/onFinish failure,
+  // assign the original error to asynchronousFailure (memory only) after
+  // recording a safe code. Never silently convert it into traced success.
   // onError/onAbort record the outcome but do not detach export work.
   abortSignal: abortController.signal,
-});
-
-// Start this while the root is active so generation, tools, persistence, and
-// the AI SDK's final telemetry work retain the intended context.
-const streamDone = result.consumeStream({
-  onError(error) {
-    Tracer.setError(safeTraceError(error), rootSpan);
-  },
 });
 
 async function flushWithoutBreakingTheCompletedResponse(): Promise<void> {
@@ -377,17 +384,28 @@ async function flushWithoutBreakingTheCompletedResponse(): Promise<void> {
   }
 }
 
-const finalize = (error?: unknown): Promise<void> => {
-  if (error) {
-    Tracer.setError(safeTraceError(error), rootSpan);
-    Tracer.setOutput({
-      status: "error",
-      errorCode: safeTraceErrorCode(error),
-    }, rootSpan);
-  }
+type TerminalOutcome =
+  | { status: "completed" }
+  | { status: "cancelled" }
+  | { status: "error"; error: unknown };
+
+const finalize = (outcome: TerminalOutcome): Promise<void> => {
   return (finalization ??= (async () => {
     try {
-      await streamDone;
+      const terminal: TerminalOutcome =
+        outcome.status === "completed" && asynchronousFailure !== undefined
+          ? { status: "error", error: asynchronousFailure }
+          : outcome;
+      if (terminal.status === "error") {
+        Tracer.setError(safeTraceError(terminal.error), rootSpan);
+        Tracer.setOutput({
+          status: "error",
+          errorCode: safeTraceErrorCode(terminal.error),
+        }, rootSpan);
+      } else if (terminal.status === "cancelled") {
+        Tracer.setAttribute("agent.response_cancelled", true, rootSpan);
+        Tracer.setOutput({ status: "cancelled" }, rootSpan);
+      }
     } finally {
       rootSpan.end();
       await flushWithoutBreakingTheCompletedResponse();
@@ -422,11 +440,11 @@ const body = new ReadableStream<Uint8Array>({
       }
 
       // Export completes before the client observes response EOF.
-      await finalize();
+      await finalize({ status: "completed" });
       controller.close();
     } catch (error) {
       try {
-        await finalize(error);
+        await finalize({ status: "error", error });
       } finally {
         controller.error(error);
       }
@@ -437,9 +455,7 @@ const body = new ReadableStream<Uint8Array>({
     try {
       await reader.cancel(reason);
     } finally {
-      // The abort/error callbacks record the outcome. Cancellation should not
-      // leave upstream generation or the root running in the background.
-      await finalize().catch(() => undefined);
+      await finalize({ status: "cancelled" }).catch(() => undefined);
     }
   },
 });
@@ -454,10 +470,19 @@ return new Response(body, {
 Connect the request signal to the same `abortUpstream` function when the
 application already exposes one. Keep response headers and status intact. The
 wrapper forwards chunks as they arrive and delays the final EOF until the
-bounded export attempt completes. However, Vercel AI SDK result branches use a
-tee internally; if one consumer lags, the runtime can buffer data. Exercise a
-long response and inspect memory/backpressure before using this double-consumer
-pattern for large streams. Do not claim that it is buffer-free.
+bounded export attempt completes. Do not also call `result.consumeStream()`
+when the response already consumes `textStream` or `fullStream`. AI SDK
+implements these branches with an internal tee; the extra consumer removes
+backpressure and can let generation, tools, and `onFinish` persistence continue
+after the client cancels. That is both an application-behavior bug and a false
+tracing-lifecycle proof.
+
+Verify this with a real client abort while a read is pending. The server must
+stop upstream work according to the application's cancellation contract, the
+root must record `cancelled` rather than ordinary success, and no success-only
+persistence or side effect may appear afterward. If the application explicitly
+chooses detached completion after disconnect, trace that as a separate durable
+work unit instead of disguising it as the cancelled request.
 
 The fail-open exporter handling above is the production default: application
 correctness should not depend on telemetry availability. A strict experiment

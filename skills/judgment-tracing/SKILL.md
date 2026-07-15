@@ -51,10 +51,11 @@ Write down four internal answers: what triggers the work, what proves it
 finished, which durable ID groups related work, and what happens on retry,
 restart, suspend, or resume.
 
-Then invoke exactly one primary focused skill before the first edit. In Claude
-Code, use the Skill tool with the namespaced name shown below. In Codex, invoke
-the corresponding `$skill-name`. If nested skill invocation is unavailable,
-read that sibling skill's `SKILL.md` completely.
+Then invoke exactly one primary focused skill before the first edit **when the
+real completion owner matches a supported row below**. In Claude Code, use the
+Skill tool with the namespaced name shown below. In Codex, invoke the
+corresponding `$skill-name`. If nested skill invocation is unavailable, read
+that sibling skill's `SKILL.md` completely.
 
 | Evidence in the real execution path | Focused skill |
 |---|---|
@@ -63,6 +64,13 @@ read that sibling skill's `SKILL.md` completely.
 | A response/stream starts before generation, callbacks, persistence, or export finish | `judgment:judgment-tracing-streaming-serverless` |
 | A long-running decision loop saves checkpoints and resumes after process death | `judgment:judgment-tracing-checkpointed-loops` |
 | A service invokes an external agent CLI and persists its returned session ID for resume | `judgment:judgment-tracing-cli-wrappers` |
+
+If none of these five completion models fits—for example a queue consumer,
+multi-agent graph, cron/batch worker, websocket, or unsupported framework
+version—do not force it into the nearest bucket. Read
+[references/tracing.md](references/tracing.md), derive the boundary from the
+real completion owner, and report that architecture-specific guidance is
+unsupported or blocked. A guessed specialist is not successful routing.
 
 The component that owns completion wins. A FastAPI submit route in front of a
 Temporal workflow is a durable-workflow architecture. A FastAPI route invoking
@@ -78,7 +86,10 @@ production path actually uses it.
 Do not report completion until all six are backed by evidence:
 
 1. **Boundary and identity:** name the business root, its completion event,
-   and the exact stable session ID.
+   and the exact stable session ID. Inspect raw parentage: the intended root
+   must be parentless, or the actual inherited HTTP/runtime root must itself
+   own the complete business lifetime, session, and semantic IO. A short
+   framework root above a useful child is a failed boundary.
 2. **Routing:** require an explicit intended project and propagate key,
    organization, project, and every configured endpoint override to each real
    exporter process. Prove the real startup fails with the project set to an
@@ -109,14 +120,6 @@ stored-evidence gate passed.
 ## Use Case References
 
 - Adding or auditing tracing: [references/tracing.md](references/tracing.md)
-- Next.js + Vercel AI SDK streaming:
-  [references/tracing-nextjs-vercel-ai-streaming.md](references/tracing-nextjs-vercel-ai-streaming.md)
-- Temporal and other durable workflows:
-  [references/tracing-durable-workflows-temporal.md](references/tracing-durable-workflows-temporal.md)
-- Checkpointed long-running agent loops:
-  [references/tracing-checkpointed-agent-loops.md](references/tracing-checkpointed-agent-loops.md)
-- Persistent agent CLI wrappers:
-  [references/tracing-agent-cli-wrappers.md](references/tracing-agent-cli-wrappers.md)
 - Creating evaluations and choosing scorers: [references/evaluations.md](references/evaluations.md)
 - Testing agent changes with OfflineTracer: [references/agent-testing.md](references/agent-testing.md)
 - Creating Python code judges: [references/code-judges.md](references/code-judges.md)

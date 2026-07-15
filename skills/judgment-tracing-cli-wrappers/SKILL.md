@@ -6,7 +6,7 @@ description: Use when adding or auditing Judgment tracing for a service that inv
 # Judgment Tracing for Persistent Agent CLI Wrappers
 
 Read
-`../judgment-tracing/references/tracing-agent-cli-wrappers.md`
+`references/agent-cli-wrappers.md`
 completely before editing.
 
 ## Required model

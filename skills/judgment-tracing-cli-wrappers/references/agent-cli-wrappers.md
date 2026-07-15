@@ -1,4 +1,4 @@
-# Persistent Agent CLI Wrapper Tracing
+# Judgment Tracing for Persistent Agent CLI Wrappers
 
 Use this guide when a web service launches an external coding/agent CLI, stores
 the CLI's returned session ID, and resumes later turns with that ID. Examples
@@ -58,13 +58,21 @@ the persisted ID passed to `--resume` equals the ID stored on the root.
 Conceptually:
 
 ```python
+from dataclasses import dataclass
+from opentelemetry.trace import Status, StatusCode
+
+@dataclass
+class WrapperOutcome:
+    reply: str | None = None
+    error: Exception | None = None
+
 @Tracer.observe(
     span_type="agent",
     span_name="sidecar.task",
     record_input=False,
     record_output=False,
 )
-def run_wrapper_turn(request):
+def traced_wrapper_turn(request) -> WrapperOutcome:
     wrapper_session = store.get_or_create_session(request.session_id)
     Tracer.set_attribute("wrapper.session_id", wrapper_session.id)
     # A resumed turn already knows the canonical CLI session. Attach it before
@@ -83,8 +91,12 @@ def run_wrapper_turn(request):
             cli_session_id=wrapper_session.cli_session_id,
         )
     except Exception as error:
-        Tracer.set_output({"status": "failed", "error": safe_error(error)})
-        raise
+        code = classify_cli_error(error)
+        Tracer.set_output({"status": "failed", "error_code": code})
+        Tracer.get_current_span().set_status(Status(StatusCode.ERROR, code))
+        # Preserve the original exception only in memory. Raising it here can
+        # make the decorator serialize raw stderr, URLs, commands, or tokens.
+        return WrapperOutcome(error=error)
 
     # The first turn learns this only after the CLI returns. The root is still
     # active, so the durable agent identity can be attached before finalization.
@@ -96,7 +108,13 @@ def run_wrapper_turn(request):
         "turn_index": turn.index,
         "exit_code": result.exit_code,
     })
-    return result.reply
+    return WrapperOutcome(reply=result.reply)
+
+def run_wrapper_turn(request) -> str:
+    outcome = traced_wrapper_turn(request)  # root ends before any re-raise
+    if outcome.error is not None:
+        raise outcome.error
+    return outcome.reply or ""
 ```
 
 Match the actual SDK API and framework lifecycle. If a generic HTTP
@@ -178,8 +196,10 @@ without printing secret values.
 
 Treat `${JUDGMENT_PROJECT_NAME:-sidecar}`, a hard-coded example project, or an
 SDK default as a failed configuration. Add a negative configuration check that
-resolves or starts the real launcher with `JUDGMENT_PROJECT_NAME` intentionally
-unset and requires a clear pre-start failure. It must not boot successfully and
+resolves or starts the real launcher with `JUDGMENT_PROJECT_NAME` explicitly
+set to an empty value and requires a clear pre-start failure. Do not merely
+`unset` it: dotenv loading can repopulate an absent variable. The command must
+exit nonzero with the expected configuration error. It must not boot and
 silently route to a guessed project.
 
 ## Fake and real modes
@@ -240,8 +260,9 @@ Use two independent wrapper sessions and at least one wrapper restart:
 3. End and boundedly flush the completed roots, then restart the wrapper.
 4. Resume the first and second sessions using their persisted CLI IDs.
 5. Exercise at least one CLI tool-producing task when practical.
-6. Separately unset `JUDGMENT_PROJECT_NAME` and prove that the production
-   launcher fails closed before serving traffic rather than guessing a project.
+6. Separately set `JUDGMENT_PROJECT_NAME` to an explicit empty value and prove
+   that the production launcher exits nonzero before serving traffic rather
+   than allowing dotenv to refill it or guessing a project.
 7. Query Judgment by the exact CLI session IDs and wait for ingestion to
    settle.
 8. Inspect roots, CLI children, errors, session membership, and raw payloads.
@@ -296,10 +317,14 @@ async def create_task(request: TaskRequest):
         result = await traced_wrapper_task(request)  # root ends on return/raise
         return result.reply
     finally:
-        flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
-        if not flushed:
-            logger.error("Judgment flush timed out after wrapper task attempt")
-            # Do not call this turn restart-safe until stored evidence arrives.
+        try:
+            flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
+            if not flushed:
+                logger.error("Judgment flush timed out after wrapper task attempt")
+                # Do not call this turn restart-safe until stored evidence arrives.
+        except Exception:
+            # Keep the original reply or business exception unchanged.
+            logger.exception("Judgment export failed after wrapper task attempt")
 ```
 
 Replace the generic names and types. Preserve the first-turn late session-ID
@@ -330,7 +355,7 @@ restart-safe when its flush failed.
 | Canonical session | Root uses the returned/resumed CLI session ID, not only wrapper ID |
 | Resume continuity | Pre- and post-restart turns share the exact CLI session |
 | CLI child | Invocation mode, resume flag, exit code, duration, and bounded outcome are present |
-| Project routing | Resolved runtime includes explicit project and endpoint override names; an unset-project negative test fails before startup and no fallback project is accepted |
+| Project routing | Resolved runtime includes explicit project and endpoint override names; an explicit-empty-project negative test exits nonzero before startup and no fallback project is accepted |
 | Noise | Health/session reads and ASGI plumbing do not dominate |
 | Payload safety | No token, environment dump, raw transcript, or workspace/file body is stored |
 | Real mode | A real authenticated first turn and resume turn were exercised |

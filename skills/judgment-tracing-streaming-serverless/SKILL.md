@@ -1,12 +1,12 @@
 ---
 name: judgment-tracing-streaming-serverless
-description: Use when adding or auditing Judgment tracing for a streamed or deferred agent response in Next.js, Vercel, a serverless or lambda runtime, or the Vercel AI SDK (`streamText`, `toTextStreamResponse`, `onFinish`). Covers full-stream root lifetime, cold starts, provider/tool telemetry, cancellation, persistence, and export-before-freeze.
+description: Use when adding or auditing Judgment tracing for a real streamed or deferred agent response whose work continues after response construction. The bundled copyable recipe specifically covers Next.js Node runtime with Vercel AI SDK 5/6 (`streamText`, `toTextStreamResponse`, `onFinish`); other serverless, lambda, Edge, UI-stream, websocket, or AI SDK 7 paths require version-specific adaptation rather than blind copying.
 ---
 
 # Judgment Tracing for Streaming and Serverless Agents
 
 Inspect the installed `ai` package major version, then read
-`../judgment-tracing/references/tracing-nextjs-vercel-ai-streaming.md`
+`references/nextjs-vercel-ai-streaming.md`
 completely. Do not copy the AI SDK 5/6 recipe into AI SDK 7.
 
 ## Required model
@@ -45,7 +45,9 @@ policy owner supplies the semantic fields that may be retained.
 3. Disable uncontrolled framework/provider bulk capture. Inspect raw stored
    attributes, including provider-specific fields, rather than previews.
 4. Run one idempotent completion barrier for success, model error, persistence
-   error, and client abort. Do not buffer the response to simplify tracing.
+   error, and client abort. Keep exactly one consumer of the AI SDK stream;
+   when the response reads it, do not add `consumeStream()` as a second branch.
+   Do not buffer the response to simplify tracing.
 5. End the root and complete an awaited, bounded flush before response EOF or
    attach export to a deployment lifecycle primitive proven by the tested
    freeze/restart behavior.

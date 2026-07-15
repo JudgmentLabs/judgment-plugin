@@ -102,8 +102,13 @@ def request_handler(session_id: str, message: str) -> str:
             raise outcome.error
         return outcome.reply or ""
     finally:
-        if not Tracer.force_flush(5_000):
-            logger.warning("Judgment export did not finish within 5s")
+        try:
+            if not Tracer.force_flush(5_000):
+                logger.warning("Judgment export did not finish within 5s")
+        except Exception:
+            # Telemetry failure blocks the verification claim. It must not
+            # replace a valid reply or the application's original exception.
+            logger.exception("Judgment export failed after chat turn")
 ```
 
 Do not let telemetry availability silently change application semantics. The
@@ -153,8 +158,12 @@ def call_model(messages):
 ```
 
 This intentionally omits full history, tool schemas, file bodies, and model
-text. Do not claim a provider integration is required merely to obtain model
-and token metadata.
+text. It is a privacy-safe **metadata-only fallback**, not complete LLM-content
+observability. Record that limitation in the final gate table. Prefer a bounded
+application-approved summary of only the current model call's semantic input
+and output when policy permits it; never restore full histories or schemas just
+to make the span look richer. Do not claim a provider integration is required
+merely to obtain model and token metadata.
 
 ## 5. Give each tool child a safe semantic result
 

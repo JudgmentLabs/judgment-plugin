@@ -201,12 +201,18 @@ async def traced_turn(request: ChatRequest) -> ChatResult:
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    result = await traced_turn(request)  # the business root has ended
-    flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
-    if not flushed:
-        logger.error("Judgment flush timed out after completed chat turn")
-        # Preserve application behavior, but do not claim restart-safe export.
-    return result
+    try:
+        return await traced_turn(request)  # the business root ends on return/raise
+    finally:
+        try:
+            flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
+            if not flushed:
+                logger.error("Judgment flush timed out after chat turn attempt")
+                # Preserve behavior, but do not claim restart-safe export.
+        except Exception:
+            # Telemetry failure must not replace a valid result or the
+            # application's original exception.
+            logger.exception("Judgment export failed after chat turn attempt")
 ```
 
 Do not copy `agent.chat_turn`, request types, or helper names literally. The
@@ -230,22 +236,21 @@ segment. Group related segments with the application's stable workflow or run
 identifier as `session_id`. Do not keep a short HTTP request root open on paper
 while unrelated worker activity continues after its time window.
 
-For Temporal and other durable workflow engines, read the focused
-[durable-workflow reference](tracing-durable-workflows-temporal.md). A framework
+For Temporal and other durable workflow engines, invoke the focused
+`judgment-tracing-durable-workflows` skill. A framework
 interceptor can propagate spans without choosing correct application roots. In
 particular, do not inherit a short submission request as the parent of an
 hours-long job, and verify `session_id` on each stored root rather than assuming
 that setting it inside an activity updated its ancestors.
 
 For a long-running loop that durably saves state after each model decision,
-read the focused
-[checkpointed-loop reference](tracing-checkpointed-agent-loops.md). The saved
+invoke the focused `judgment-tracing-checkpointed-loops` skill. The saved
 iteration is normally the trace boundary and the run ID is the session. A
 process-lifetime segment root can lose many already-completed iterations when
 the process is killed before that outer root ends.
 
-For a persistent wrapper around an external agent CLI, read the focused
-[agent-CLI wrapper reference](tracing-agent-cli-wrappers.md). The underlying
+For a persistent wrapper around an external agent CLI, invoke the focused
+`judgment-tracing-cli-wrappers` skill. The underlying
 CLI session returned by the first subprocess call is normally the durable
 `session_id`; set it on the still-active wrapper root before finalization and
 verify resume continuity after a wrapper restart.
@@ -323,7 +328,8 @@ asynchronous initialization finishes.
   judgment_project = require_env("JUDGMENT_PROJECT_NAME")
   ```
 
-  An unset-project negative test must fail before the server accepts traffic.
+  An explicit-empty-project negative test must exit nonzero before the server
+  accepts traffic. Do not merely `unset` the variable: dotenv may repopulate it.
   Reject `${JUDGMENT_PROJECT_NAME:-example}`, hard-coded agent names, and a
   silent no-op tracer as substitutes for explicit routing.
 

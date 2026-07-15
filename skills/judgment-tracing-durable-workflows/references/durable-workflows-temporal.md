@@ -1,4 +1,4 @@
-# Temporal and Durable-Workflow Tracing
+# Judgment Tracing for Temporal and Durable Workflows
 
 Use this guide when an application starts work that can outlive the request
 that submitted it, especially when it uses Temporal workflows, activities,
@@ -232,13 +232,20 @@ async def plan_activity(request: PlanRequest) -> PlanResult:
         # The Judgment root ends when traced_plan returns or raises.
         return await traced_plan(request)
     finally:
-        flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
-        if not flushed:
-            activity.logger.error(
-                "Judgment flush timed out after plan activity attempt"
+        try:
+            flushed = await asyncio.to_thread(Tracer.force_flush, 5_000)
+            if not flushed:
+                activity.logger.error(
+                    "Judgment flush timed out after plan activity attempt"
+                )
+                # Production policy may preserve the durable result/error, but
+                # tracing verification must mark this attempt not trace-safe.
+        except Exception:
+            # Export failure blocks the experiment claim, but must not replace
+            # the activity result or Temporal's original retryable exception.
+            activity.logger.exception(
+                "Judgment export failed after plan activity attempt"
             )
-            # Production policy may preserve the durable result/error, but
-            # tracing verification must mark this attempt not trace-safe.
 ```
 
 Apply the same completion barrier to successful and failed activity roots that

@@ -6,7 +6,7 @@ description: Use when adding or auditing Judgment tracing for Temporal or anothe
 # Judgment Tracing for Durable Workflows
 
 Read
-`../judgment-tracing/references/tracing-durable-workflows-temporal.md`
+`references/durable-workflows-temporal.md`
 completely before editing. Treat its completion gate as binding.
 
 ## Required model
