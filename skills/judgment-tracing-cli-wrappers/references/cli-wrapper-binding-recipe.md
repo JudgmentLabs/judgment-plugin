@@ -3,6 +3,12 @@
 Read this file completely before editing a service that invokes an agent CLI
 and persists the CLI's returned session ID for later resume.
 
+**Naming rule:** derive the root and child span names from the application's
+own domain: `<app>.<unit>` (a Sidecar task root is `sidecar.task`). The
+literal example names in this file (`application.wrapper_turn`,
+`agent_cli.invoke`) are placeholders except where a name is explicitly
+required; shipping a placeholder root name verbatim is a completion failure.
+
 ## Contents
 
 - [Declare the target before editing](#1-declare-the-target-before-editing)

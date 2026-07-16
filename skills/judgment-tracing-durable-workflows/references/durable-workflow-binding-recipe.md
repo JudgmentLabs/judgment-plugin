@@ -6,7 +6,7 @@ agent. This checklist is binding; adapt names and SDK calls to the repository.
 ## Contents
 
 - [Map the durable work](#1-map-the-durable-work)
-- [Choose one honest trace model](#2-choose-one-honest-trace-model)
+- [Build the segment trace model](#2-build-the-segment-trace-model)
 - [Bind the implementation](#3-bind-the-implementation)
 - [Preserve application behavior](#4-preserve-application-behavior)
 - [Apply one payload policy](#5-apply-one-payload-policy)
@@ -29,18 +29,49 @@ Write down before editing:
 Never make a short HTTP request own work that continues after its response.
 Never hold a span open across an indefinite durable wait.
 
-## 2. Choose one honest trace model
+## 2. Build the segment trace model
 
-- Canonical model: one fresh trace for each application-owned work segment
-  between durable suspends, plus separate short producer-write traces.
-- Use the exact workflow/job ID as `judgment.session_id` on every related root.
-- Use a segment only when one component owns its whole lifetime and can end and
-  export it with final semantic input/output.
-- Otherwise use one fresh trace per meaningful activity or restart-safe
-  execution phase. Report this as the safe fallback, not the canonical segment
-  model. Do not fake a cross-process parent.
-- Name roots by business purpose. Do not let `StartWorkflow`, `RunActivity`,
-  transport, polling, or interceptor shells dominate the session.
+The required model: **one trace per autonomous work segment between durable
+suspends** — for an approval workflow, one pre-approval trace (planning and
+execution activities as children) and one post-approval trace (completion
+work as children) — plus separate short producer-write traces for
+submit/approve/cancel. Use the exact workflow/job ID as `judgment.session_id`
+on every related root. One trace per individual activity is NOT the target
+shape: it scatters one logical phase across many roots. Fall back to
+per-activity roots only when the runtime genuinely cannot support segment
+ownership (see below), and report that explicitly as a fallback with the
+reason.
+
+Segment ownership is implementable even though workflow code cannot export:
+
+1. The workflow (deterministic code, no telemetry calls) annotates each
+   activity dispatch with plain input fields: `segment` (for example
+   `pre_approval` / `post_approval`), `segment_attempt`, and
+   `segment_boundary: true` on the segment's final activity. These are
+   ordinary deterministic values, safe in workflow code.
+2. A worker-side segment owner (activity interceptor or a small helper the
+   activities call) reads those fields: on a segment's first activity for a
+   workflow, it guardedly starts the segment root (named by business phase,
+   for example `relay.pre_approval_work`) and keeps it active/current in
+   worker memory keyed by workflow ID + segment; every activity, LLM call,
+   and tool span for that segment nests under it.
+3. On the `segment_boundary` activity's completion, the owner records the
+   segment's bounded semantic output, ends the root, and awaits the bounded
+   flush.
+4. If the worker dies mid-segment, the open segment root is lost — record
+   that honestly. On retry/restart, start a NEW segment root with the same
+   session ID and an incremented `segment_attempt`; never pretend one root
+   spanned the kill and never fake a cross-process parent.
+5. Register a worker shutdown hook that guardedly ends any still-open
+   segment root with an explicit `interrupted` outcome and attempts a
+   bounded flush, so a graceful stop does not silently drop the segment.
+
+This pattern requires all of one workflow's activities to run where the owner
+can see them (one task queue/worker service, the common case, and true for a
+single-worker Compose topology). If activities for one segment genuinely fan
+out across processes that share no owner, use the per-activity fallback and
+say why. Name roots by business purpose; do not let `StartWorkflow`,
+`RunActivity`, transport, polling, or interceptor shells dominate the session.
 
 Each root must have positive duration, final IO, and a window containing all
 children. Sharing a trace ID is not proof. A session groups completed traces;

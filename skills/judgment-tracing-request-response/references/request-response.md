@@ -1,8 +1,13 @@
 # Request/Response Tracing Recipe
 
 Use this recipe for a bounded request or chat turn whose business work really
-finishes before the response returns. Adapt names to the application; do not
-copy placeholders as production names.
+finishes before the response returns.
+
+**Naming rule:** derive every root and tool span name from the application's
+own domain: `<app>.<unit>` (a Codey chat turn is `codey.chat_turn`, its file
+tool `codey.tool.read_file`). The literal example names in this file
+(`app.chat_turn`, `app.model_call`) are placeholders; shipping a placeholder
+name verbatim is a completion failure.
 
 ## Contents
 
@@ -423,6 +428,13 @@ not always explain it.
 | shell | operation category, executable class, exit code, timeout, bounded sanitized summary | raw command and environment |
 | tests | target category, exit code, passed/failed/skipped counts, bounded sanitized failure summary | full logs |
 | API/database | operation, entity type, safe identifier, outcome/error code | auth, raw records, query secrets |
+
+**Name every tool span after the actual business tool.** The span name must be
+the app-derived business identity — `<app>.tool.<real_tool_name>`, for example
+`codey.tool.read_file` — set through the decorator's `span_name` per tool or a
+guarded rename while the tool span is current. A single generic name shared by
+all tools (`app.tool_call`, `tool`, `execute`) fails tool usefulness even when
+the real name sits in an attribute: reviewers and judges scan span names.
 
 For a caught tool error, use a small observed adapter that sets safe input,
 `{"ok": false, "error_code": ...}` output, and OpenTelemetry error status,

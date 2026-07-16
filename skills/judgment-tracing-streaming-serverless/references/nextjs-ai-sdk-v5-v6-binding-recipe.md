@@ -8,6 +8,12 @@ After dependencies are installed, run
 (`<skill-directory>` = the directory containing the streaming `SKILL.md`) and
 keep its JSON as static evidence. A nonzero result blocks this binding.
 
+**Naming rule:** derive every root and tool span name from the application's
+own domain: `<app>.<unit>` (a Deskflow support turn is `deskflow.turn`, its
+tools `deskflow.tool.lookup_order` etc.). The literal example names in this
+file (`application.chat_turn`, `application.tool.*`) are placeholders;
+shipping a placeholder name verbatim is a completion failure.
+
 Record `package.json`/lockfile hashes and exact `next`/`ai` versions before and
 after adding the tracing dependency via the repository's existing package
 manager with a frozen-lock install. Any unrelated dependency change blocks the
