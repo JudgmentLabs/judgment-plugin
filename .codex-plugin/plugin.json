@@ -1,6 +1,6 @@
 {
   "name": "judgment",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Access Judgment traces, sessions, behaviors, judges, prompts, datasets, and tests directly from Codex, with official skills for tracing, evaluation, and MCP usage best practices.",
   "author": {
     "name": "Judgment Labs",

@@ -70,7 +70,15 @@ This pattern requires all of one workflow's activities to run where the owner
 can see them (one task queue/worker service, the common case, and true for a
 single-worker Compose topology). If activities for one segment genuinely fan
 out across processes that share no owner, use the per-activity fallback and
-say why. Name roots by business purpose; do not let `StartWorkflow`,
+say why.
+
+Producer-write traces (submit/approve/cancel) are short-lived request roots in
+a different process from the workers: **end each producer root and await the
+bounded flush inside that request, before returning the HTTP response.**
+Relying on process-shutdown or lifespan flush loses producer roots when the
+service is stopped abruptly, and a producer that exports nothing during the
+real scenario fails the stored-verification gate even when worker traces
+arrive. Name roots by business purpose; do not let `StartWorkflow`,
 `RunActivity`, transport, polling, or interceptor shells dominate the session.
 
 Each root must have positive duration, final IO, and a window containing all

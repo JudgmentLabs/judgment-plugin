@@ -175,9 +175,33 @@ root or flush.
 ## 2. Bind one real runtime and explicit routing
 
 - Initialize Judgeval once in the Node branch of `instrumentation.ts` (delayed
-  import so Edge does not load the Node SDK). Externalize/deduplicate
-  `judgeval` in the existing Next config and prove instrumentation plus route
-  share one Judgeval/OpenTelemetry runtime in the production server bundle.
+  import so Edge does not load the Node SDK).
+- **Required config edit — without it the production build silently exports
+  nothing.** Next.js bundles `judgeval` separately into `instrumentation.ts`
+  and the route unless it is externalized, so `register()` initializes one SDK
+  copy while the route calls an uninitialized second copy (no error, no
+  export). Add to the existing `next.config.mjs`, preserving other settings:
+
+  ```js
+  const nextConfig = {
+    // ...existing settings...
+    serverExternalPackages: ['judgeval'],
+  };
+  ```
+
+  Then prove the singleton in the built output before any live claim:
+
+  ```bash
+  # exactly one bundled copy means externalization worked; more than one
+  # (or judgeval missing from the standalone node_modules) fails this gate
+  find .next/standalone -path '*node_modules/judgeval/package.json' | wc -l
+  grep -rl "judgeval" .next/server/chunks 2>/dev/null | head -3  # should be references, not an inlined copy
+  ```
+
+  A dev-server test cannot detect this failure: dev module resolution shares
+  one copy, so tracing "works" in dev and silently no-ops in the Compose
+  production build. Live verification against anything other than the
+  checked-in production launcher does not count.
 - Require the intended existing project, fail-closed: compare the resolved
   runtime ID with the expected project ID, or keep routing blocked until a
   unique live probe settles in that exact project. If name-based init can
