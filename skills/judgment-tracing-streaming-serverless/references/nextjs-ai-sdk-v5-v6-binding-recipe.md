@@ -106,6 +106,15 @@ async function activateTurn(
         traceOnly('root span kind', () => {
           Tracer.setSpanKind('agent', rootSpan);
         });
+        // Identity uses the DEDICATED setters, not fields inside
+        // judgment.input: platform session/customer grouping and the E6
+        // customer gate read judgment.session_id / judgment.customer_id.
+        traceOnly('root identity', () => {
+          Tracer.setSessionId(validatedSessionId, rootSpan);
+          if (validatedCustomerId) {
+            Tracer.setCustomerId(validatedCustomerId, rootSpan);
+          }
+        });
         // Retain this exact promise before returning it to the context manager.
         // A faulty context-exit path can throw synchronously after invoking this
         // callback but before the application promise settles.
@@ -449,9 +458,17 @@ deadline.
 
 ```ts
 interface StreamLifecycle {
+  // MUST guardedly write the root attribute
+  // `transport.client_disconnected = true` in addition to updating the
+  // in-memory mirror — the stored facet is graded, prose intent is not.
   markTransportDisconnected(): void;
   markTransportFailure(): void;
+  // MUST guardedly write `framework.abort_observed = true` on the root.
   recordFrameworkAbort(): void;
+  // MUST make the finalizer store an explicit bounded `cancelled` terminal
+  // outcome (for example `{ ok: false, outcome: 'cancelled' }`) — a
+  // disconnect facet alone is not a cancellation verdict, and a cancelled
+  // turn must never store ordinary success output.
   markApplicationCancelled(): void;
   markStreamFailure(): void;
   finalizeTraceOnce(): Promise<void>;
@@ -603,6 +620,10 @@ then extend it for providers and domain secrets actually present in the app:
 
 ```ts
 const TRACE_ATTRIBUTE_UTF8_BYTE_LIMIT = 1_500;
+// The root's semantic prompt/reply may use a larger budget: observed platform
+// clipping starts near 2,000 serialized bytes, so 1,800 keeps margin while
+// preserving more exact turn fidelity. Children/tools stay at 1,500.
+const ROOT_TRACE_ATTRIBUTE_UTF8_BYTE_LIMIT = 1_800;
 const TRACE_UTF8_ENCODER = new TextEncoder();
 const EXACT_SECRET_KEYS = new Set([
   'authorization', 'proxy_authorization', 'http_authorization',
@@ -781,9 +802,13 @@ function sanitizeTraceValue(value: unknown): unknown {
   return typeof value === 'string' ? sanitizeTraceText(value) : value;
 }
 
-function boundSanitizedTraceValue(rawValue: unknown): unknown {
+function boundSanitizedTraceValue(
+  rawValue: unknown,
+  byteLimit: number = TRACE_ATTRIBUTE_UTF8_BYTE_LIMIT,
+): unknown {
   // This combined API makes the required order hard to reverse: sanitize the
   // complete composed value first, then bound the aggregate serialization.
+  // Root judgment.input/output setters pass ROOT_TRACE_ATTRIBUTE_UTF8_BYTE_LIMIT.
   const sanitized = sanitizeTraceValue(rawValue);
   let serialized: string | undefined;
   try {
@@ -792,7 +817,7 @@ function boundSanitizedTraceValue(rawValue: unknown): unknown {
     return { omitted: 'unserializable' };
   }
   if (typeof serialized !== 'string') return { omitted: 'unserializable' };
-  if (traceUtf8ByteLength(serialized) <= TRACE_ATTRIBUTE_UTF8_BYTE_LIMIT) {
+  if (traceUtf8ByteLength(serialized) <= byteLimit) {
     return sanitized;
   }
 
@@ -809,8 +834,7 @@ function boundSanitizedTraceValue(rawValue: unknown): unknown {
       truncated: true,
       sanitizedPreview: characters.slice(0, middle).join(''),
     };
-    if (traceUtf8ByteLength(JSON.stringify(candidate)) <=
-        TRACE_ATTRIBUTE_UTF8_BYTE_LIMIT) {
+    if (traceUtf8ByteLength(JSON.stringify(candidate)) <= byteLimit) {
       best = candidate;
       low = middle + 1;
     } else {
@@ -846,7 +870,8 @@ Always call the combined `boundSanitizedTraceValue` at setters so sanitization
 precedes aggregate bounding — bounding first can split a credential and leak
 its remainder. Truncation is not redaction. The complete serialized
 `judgment.input`/`judgment.output`, including truncation metadata, must stay
-<=1,500 UTF-8 bytes and parseable in settled raw storage. The business
+within its budget (root prompt/reply <=1,800 bytes, everything else <=1,500)
+and parseable in settled raw storage. The business
 `sessionId` goes through `Tracer.setSessionId`, not this sanitizer.
 
 For stored proof, place a benign semantic marker plus non-real canaries

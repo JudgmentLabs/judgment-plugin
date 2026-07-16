@@ -335,7 +335,7 @@ Choose an approved sanitizer, a conservative credential/auth baseline that
 requires privacy review, or strict omission that blocks prompt/reply usefulness.
 Project allowlisted business fields first, recursively redact that structure,
 then serialize and bound each trace input/output to **at most 1,500 UTF-8
-bytes**. This leaves margin below the roughly 2,000-byte clipping boundary
+bytes** (root prompt/reply: up to **1,800 bytes**). This leaves margin below the roughly 2,000-byte clipping boundary
 observed in stored platform payloads; the previous 4,000-character application
 bound was therefore not protective. If a payload is clipped, store a parseable
 object containing
@@ -363,6 +363,9 @@ from collections.abc import Mapping
 from urllib.parse import unquote_plus
 
 TRACE_PAYLOAD_MAX_BYTES = 1_500
+# Root prompt/reply budget; observed platform clipping starts near 2,000
+# serialized bytes, so 1,800 keeps margin with better turn fidelity.
+ROOT_TRACE_PAYLOAD_MAX_BYTES = 1_800
 TRACE_INPUT_FIELDS = ("prompt", "wrapper_id", "mode", "resume")
 TRACE_OUTPUT_FIELDS = (
     "ok", "result", "reply", "error_code", "mode", "resume", "exit_code",
@@ -619,7 +622,11 @@ def serialized_size(value: object) -> int:
         ).encode("utf-8")
     )
 
-def bound_trace_payload(payload: dict) -> dict:
+def bound_trace_payload(
+    payload: dict,
+    max_bytes: int = TRACE_PAYLOAD_MAX_BYTES,
+) -> dict:
+    # Root judgment.input/output callers pass ROOT_TRACE_PAYLOAD_MAX_BYTES.
     serialized = json.dumps(
         payload,
         ensure_ascii=True,
@@ -627,7 +634,7 @@ def bound_trace_payload(payload: dict) -> dict:
         separators=(",", ":"),
     )
     original_bytes = len(serialized.encode("utf-8"))
-    if original_bytes <= TRACE_PAYLOAD_MAX_BYTES:
+    if original_bytes <= max_bytes:
         return payload
 
     summary = {
@@ -647,7 +654,7 @@ def bound_trace_payload(payload: dict) -> dict:
     marker = {
         "truncated": True,
         "original_bytes": original_bytes,
-        "max_bytes": TRACE_PAYLOAD_MAX_BYTES,
+        "max_bytes": max_bytes,
     }
 
     # Binary-search a sanitized serialized preview while preserving valid JSON.
@@ -660,7 +667,7 @@ def bound_trace_payload(payload: dict) -> dict:
             "_judgment_truncation": marker,
             "preview": serialized[:midpoint],
         }
-        if serialized_size(candidate) <= TRACE_PAYLOAD_MAX_BYTES:
+        if serialized_size(candidate) <= max_bytes:
             bounded = candidate
             low = midpoint + 1
         else:
@@ -672,7 +679,7 @@ def set_safe_trace_input(label: str, raw_fields: Mapping[str, object]) -> None:
         projected = project_trace_input(raw_fields)
         canonical = canonicalize_trace_value(projected)
         sanitized = redact_auth(canonical)
-        bounded = bound_trace_payload(sanitized)
+        bounded = bound_trace_payload(sanitized, ROOT_TRACE_PAYLOAD_MAX_BYTES)
         Tracer.set_input(bounded)
 
     trace_only(label, write)
@@ -684,7 +691,7 @@ def set_safe_trace_output(label: str, raw_fields: Mapping[str, object]) -> None:
         projected = project_trace_output(raw_fields)
         canonical = canonicalize_trace_value(projected)
         sanitized = redact_auth(canonical)
-        bounded = bound_trace_payload(sanitized)
+        bounded = bound_trace_payload(sanitized, ROOT_TRACE_PAYLOAD_MAX_BYTES)
         Tracer.set_output(bounded)
 
     trace_only(label, write)

@@ -226,7 +226,10 @@ sanitizer on one composed payload, not only each pattern in isolation.
 
 The limit is **1,500 UTF-8 bytes after the exact installed SDK serializer**, or
 a lower documented destination limit—not 1,500 characters and not 1,500 bytes
-for an inner field later wrapped in another object. For Judgeval Python 1.2.x,
+for an inner field later wrapped in another object. The root's semantic
+prompt/reply payload may use up to **1,800 bytes** (`ROOT_TRACE_PAYLOAD_MAX_BYTES`):
+observed platform clipping starts near 2,000 serialized bytes, so 1,800 keeps
+margin while preserving more exact turn fidelity. For Judgeval Python 1.2.x,
 dict/list attributes are serialized with compact `orjson`; the following
 structure-first schema mirrors that serializer for the JSON-safe domain it
 creates. Reinspect and adapt the serializer adapter when the pinned SDK version
@@ -241,6 +244,10 @@ import orjson
 from judgeval import Tracer
 
 TRACE_PAYLOAD_MAX_BYTES = 1_500
+# The root's semantic prompt/reply may use a larger budget: observed platform
+# clipping starts near 2,000 serialized bytes, so 1,800 keeps margin while
+# preserving more exact turn fidelity. Children/tools stay at 1,500.
+ROOT_TRACE_PAYLOAD_MAX_BYTES = 1_800
 TRACE_SUMMARY_FIELDS = ("ok", "status", "error_code", "operation", "model")
 SECRET_KEYS = {
     "authorization", "proxy_authorization", "http_authorization",
@@ -304,9 +311,13 @@ def _serialize_like_judgeval_1_2(value: object) -> bytes:
     # unchanged to this exact compact orjson encoding.
     return orjson.dumps(value, option=orjson.OPT_NON_STR_KEYS)
 
-def _bounded_payload(payload: dict[str, object]) -> dict[str, object]:
+def _bounded_payload(
+    payload: dict[str, object],
+    max_bytes: int = TRACE_PAYLOAD_MAX_BYTES,
+) -> dict[str, object]:
+    # Root judgment.input/output callers pass ROOT_TRACE_PAYLOAD_MAX_BYTES.
     serialized = _serialize_like_judgeval_1_2(payload)
-    if len(serialized) <= TRACE_PAYLOAD_MAX_BYTES:
+    if len(serialized) <= max_bytes:
         return payload
 
     summary = {
@@ -326,7 +337,7 @@ def _bounded_payload(payload: dict[str, object]) -> dict[str, object]:
     marker = {
         "truncated": True,
         "original_bytes": len(serialized),
-        "max_bytes": TRACE_PAYLOAD_MAX_BYTES,
+        "max_bytes": max_bytes,
     }
     preview = serialized.decode("utf-8")
     bounded = {**summary, "_judgment_truncation": marker, "preview": ""}
@@ -338,7 +349,7 @@ def _bounded_payload(payload: dict[str, object]) -> dict[str, object]:
             "_judgment_truncation": marker,
             "preview": preview[:middle],
         }
-        if len(_serialize_like_judgeval_1_2(candidate)) <= TRACE_PAYLOAD_MAX_BYTES:
+        if len(_serialize_like_judgeval_1_2(candidate)) <= max_bytes:
             bounded = candidate
             low = middle + 1
         else:

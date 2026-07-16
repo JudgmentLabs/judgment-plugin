@@ -82,7 +82,8 @@ line, or key/value expression can consume only part of them. Then apply the
 remaining authorization, cookie, URL, query, and assignment rules.
 
 Serialize only after projection and sanitization. Every stored
-`judgment.input` or `judgment.output` must be at most **1,500 UTF-8 bytes**, or a
+`judgment.input` or `judgment.output` must be at most **1,500 UTF-8 bytes**
+(the root's semantic prompt/reply may use up to **1,800 bytes**), or a
 lower documented destination limit, **after the exact installed SDK
 serializer** has encoded the complete value. Bounding `message` and then
 wrapping it in `{"request": ...}` does not satisfy this rule. Use the shared

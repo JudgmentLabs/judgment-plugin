@@ -180,6 +180,7 @@ Do not report completion until all seven are backed by evidence:
    approved fields, sanitize (multiline/private-key removal before broad
    single-line rules; test the complete ordered sanitizer, not each regex
    alone), then cap each complete input/output value at 1,500 UTF-8 bytes
+   (root semantic prompt/reply: up to 1,800 bytes)
    after the exact installed SDK serializer, parseable, with a
    `_judgment_truncation` object when reduced. The selected specialist's
    canary matrix is the proof standard; the business/session ID goes through
