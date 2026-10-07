@@ -4,10 +4,10 @@ The official [Judgment](https://judgmentlabs.ai) plugin for AI coding agents.
 One repo, installable in both Claude Code and OpenAI Codex, bundling:
 
 1. **The Judgment MCP server** (`https://mcp.judgmentlabs.ai`): query traces,
-   sessions, behaviors, judges, prompts, datasets, tests, automations, and
+   sessions, labels, judges, prompts, datasets, tests, automations, and
    agent memory directly from your editor.
 2. **The `judgment-tracing` skill**: best-practice guidance for instrumenting
-   apps with tracing, writing evaluations, building code judges, and running
+   apps with tracing, writing evaluations, building Code judges, and running
    offline agent tests.
 3. **The `mcp-server-best-practices` skill**: usage patterns for the Judgment
    MCP itself (search_traces batching, filter reference, fan-out queries).

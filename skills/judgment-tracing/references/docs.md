@@ -32,7 +32,7 @@ curl -s https://docs.judgmentlabs.ai/sdk-reference/typescript.md
 ## Useful Topics
 
 - Tracing: `https://docs.judgmentlabs.ai/documentation/performance/tracing`
-- Prompt scorers: `https://docs.judgmentlabs.ai/documentation/evaluation/prompt-scorers`
+- Agent judges: `https://docs.judgmentlabs.ai/documentation/evaluation/prompt-scorers`
 - Code judges: `https://docs.judgmentlabs.ai/documentation/evaluation/custom-scorers`
 - Datasets: `https://docs.judgmentlabs.ai/documentation/evaluation/datasets`
 - Python SDK reference: `https://docs.judgmentlabs.ai/sdk-reference/python`
