@@ -11,7 +11,7 @@ metadata:
 
 ## Default to MCP
 
-**Always use MCP tools first** when the user asks about anything related to Judgment data — traces, behaviors, sessions, projects, automations, judges, prompts, datasets, tests, documentation, agent memory, agent threads, or organizations. Do not fall back to reading code or asking for IDs if an MCP tool can fetch the data directly.
+**Always use MCP tools first** when the user asks about anything related to Judgment data — traces, labels, sessions, projects, automations, judges, prompts, datasets, tests, documentation, agent memory, agent threads, or organizations. Do not fall back to reading code or asking for IDs if an MCP tool can fetch the data directly.
 
 ## Using search_traces Effectively
 
@@ -49,7 +49,7 @@ Each filter is an object with a `field` discriminator:
 // LLM cost (USD)
 { "field": "llm_cost", "op": ">", "value": 0.10 }
 
-// Behaviors (any of the listed judge/value pairs)
+// Labels a judge applied (the filter field is still "behaviors"; any of the listed judge/value pairs)
 { "field": "behaviors", "op": "any", "value": [{ "judge_name": "toxicity", "value": "toxic" }] }
 
 // Numeric score by name
