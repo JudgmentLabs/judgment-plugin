@@ -49,7 +49,7 @@ Each filter is an object with a `field` discriminator:
 // LLM cost (USD)
 { "field": "llm_cost", "op": ">", "value": 0.10 }
 
-// Labels a judge applied (the filter field is still "behaviors"; any of the listed judge/value pairs)
+// Labels (any of the listed judge/value pairs)
 { "field": "behaviors", "op": "any", "value": [{ "judge_name": "toxicity", "value": "toxic" }] }
 
 // Numeric score by name
