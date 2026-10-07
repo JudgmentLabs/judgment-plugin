@@ -12,7 +12,7 @@
     {
       "name": "judgment",
       "source": "./",
-      "description": "Judgment MCP server plus official skills (tracing, evaluations, code judges, MCP usage best practices)."
+      "description": "Judgment MCP server plus official skills (tracing, evaluations, Code judges, MCP usage best practices)."
     }
   ]
 }

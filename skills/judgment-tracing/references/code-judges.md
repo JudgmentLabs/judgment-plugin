@@ -1,6 +1,6 @@
 # Judgment Code judges
 
-Use this reference when creating Python code judges.
+Use this reference when creating Python Code judges.
 
 ## Current support
 
@@ -14,7 +14,7 @@ curl -s https://docs.judgmentlabs.ai/documentation/evaluation/custom-scorers.md
 
 ## When to use a Code judge
 
-Use a code judge when scoring needs:
+Use a Code judge when scoring needs:
 
 - deterministic business logic
 - custom Python dependencies

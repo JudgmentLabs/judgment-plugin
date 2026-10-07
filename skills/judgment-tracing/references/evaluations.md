@@ -18,7 +18,7 @@ Use this reference when creating or debugging evaluations.
 4. Pick one scorer first:
 
    - prompt or hosted scorer for rubric-based natural-language judgment
-   - Python code judge for deterministic logic, custom dependencies, or trace inspection
+   - Python Code judge for deterministic logic, custom dependencies, or trace inspection
 
 5. Run locally while iterating, then expand the dataset and hosted workflows when the signal is useful.
 
@@ -40,7 +40,7 @@ examples = [
 ## Scorer Selection
 
 - Use prompt scorers for qualitative rubrics such as helpfulness, policy adherence, or answer quality.
-- Use code judges for exact checks, business logic, custom library calls, or direct trace inspection.
+- Use Code judges for exact checks, business logic, custom library calls, or direct trace inspection.
 - Use datasets when the user needs repeatable regression testing across many examples.
 
 ## Common Mistakes
