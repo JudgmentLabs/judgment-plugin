@@ -150,7 +150,7 @@ when possible, only ask when unclear.
 | Customer, org, workspace, or tenant identifiers                              | Multi-tenant app           | `customer_id`, `tenant_id`, or plan tier     |
 | Multiple routes, tools, agents, or product features                          | Multi-feature app          | `feature`, `route`, or agent name attribute  |
 | A/B tests, model routing, prompt variants                                    | Experimented app           | experiment, prompt, or model-family tag      |
-| Feedback collection, ratings, thumbs up/down                                 | Has user feedback          | capture as scores or labels                  |
+| Feedback collection, ratings, thumbs up/down                                 | Has user feedback          | capture as scores                            |
 | Stateless HTTP handlers, workers, queues, serverless functions, or RPC calls | Distributed app            | distributed tracing with `service.name`      |
 | Environment-specific projects                                                | Needs project routing      | active tracers with project names            |
 | Traced functions spread across modules                                       | Cross-file instrumentation | one tracer init, observed functions          |
@@ -181,7 +181,7 @@ when possible, only ask when unclear.
 | `service.name`                   | Separates services in OpenTelemetry and distributed flows           | https://docs.judgmentlabs.ai/documentation/performance/tracing#opentelemetry-integration     |
 | Distributed trace propagation    | Connects stateless downstream service spans to the original request | https://docs.judgmentlabs.ai/documentation/performance/tracing#distributed-tracing           |
 | Agent linked traces              | Links delegated agent/subsystem work back to the parent trace       | https://docs.judgmentlabs.ai/documentation/performance/tracing#subagent-tracing              |
-| Labels or scores                 | Filter by label or score and track how often each label is applied  | https://docs.judgmentlabs.ai/documentation/monitoring                                        |
+| Labels or scores                 | Filter by label or score and track how often each label is applied  | https://docs.judgmentlabs.ai/documentation/judges/monitor-judge-results                      |
 
 These are NOT baseline best practices. Only add what's relevant based on
 inference or user input.

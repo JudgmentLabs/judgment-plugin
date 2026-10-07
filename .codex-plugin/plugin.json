@@ -25,7 +25,7 @@
   "interface": {
     "displayName": "Judgment",
     "shortDescription": "Query Judgment traces, sessions, labels, judges, and docs.",
-    "longDescription": "Adds the Judgment MCP server and the official Judgment skills so Codex can inspect live agent data and follow Judgment best practices for tracing, evaluations, code judges, datasets, and monitoring.",
+    "longDescription": "Adds the Judgment MCP server and the official Judgment skills so Codex can inspect live agent data and follow Judgment best practices for tracing, evaluations, Code judges, datasets, and monitoring.",
     "developerName": "Judgment Labs",
     "category": "Productivity",
     "capabilities": [

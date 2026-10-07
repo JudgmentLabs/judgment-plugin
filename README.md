@@ -7,7 +7,7 @@ One repo, installable in both Claude Code and OpenAI Codex, bundling:
    sessions, labels, judges, prompts, datasets, tests, automations, and
    agent memory directly from your editor.
 2. **The `judgment-tracing` skill**: best-practice guidance for instrumenting
-   apps with tracing, writing evaluations, building code judges, and running
+   apps with tracing, writing evaluations, building Code judges, and running
    offline agent tests.
 3. **The `mcp-server-best-practices` skill**: usage patterns for the Judgment
    MCP itself (search_traces batching, filter reference, fan-out queries).
