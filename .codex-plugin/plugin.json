@@ -1,7 +1,7 @@
 {
   "name": "judgment",
   "version": "1.0.1",
-  "description": "Access Judgment traces, sessions, behaviors, judges, prompts, datasets, and tests directly from Codex, with official skills for tracing, evaluation, and MCP usage best practices.",
+  "description": "Access Judgment traces, sessions, labels, judges, prompts, datasets, and tests directly from Codex, with official skills for tracing, evaluation, and MCP usage best practices.",
   "author": {
     "name": "Judgment Labs",
     "email": "support@judgmentlabs.ai",
@@ -24,7 +24,7 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Judgment",
-    "shortDescription": "Query Judgment traces, sessions, behaviors, judges, and docs.",
+    "shortDescription": "Query Judgment traces, sessions, labels, judges, and docs.",
     "longDescription": "Adds the Judgment MCP server and the official Judgment skills so Codex can inspect live agent data and follow Judgment best practices for tracing, evaluations, code judges, datasets, and monitoring.",
     "developerName": "Judgment Labs",
     "category": "Productivity",

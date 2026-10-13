@@ -150,7 +150,7 @@ when possible, only ask when unclear.
 | Customer, org, workspace, or tenant identifiers                              | Multi-tenant app           | `customer_id`, `tenant_id`, or plan tier     |
 | Multiple routes, tools, agents, or product features                          | Multi-feature app          | `feature`, `route`, or agent name attribute  |
 | A/B tests, model routing, prompt variants                                    | Experimented app           | experiment, prompt, or model-family tag      |
-| Feedback collection, ratings, thumbs up/down                                 | Has user feedback          | capture as scores or behavior signals        |
+| Feedback collection, ratings, thumbs up/down                                 | Has user feedback          | capture as scores                            |
 | Stateless HTTP handlers, workers, queues, serverless functions, or RPC calls | Distributed app            | distributed tracing with `service.name`      |
 | Environment-specific projects                                                | Needs project routing      | active tracers with project names            |
 | Traced functions spread across modules                                       | Cross-file instrumentation | one tracer init, observed functions          |
@@ -166,8 +166,8 @@ when possible, only ask when unclear.
   Determines whether project routing is needed
 - "Does one request cross a stateless HTTP, worker, queue, serverless, or RPC
   boundary?" -> Determines whether distributed tracing is needed
-- "How do you know when a response is good vs bad?" -> Determines scoring or
-  behavior-monitoring follow-up
+- "How do you know when a response is good vs bad?" -> Determines whether to
+  follow up with a score or a label
 
 **Additions and their value:**
 
@@ -181,7 +181,7 @@ when possible, only ask when unclear.
 | `service.name`                   | Separates services in OpenTelemetry and distributed flows           | https://docs.judgmentlabs.ai/documentation/performance/tracing#opentelemetry-integration     |
 | Distributed trace propagation    | Connects stateless downstream service spans to the original request | https://docs.judgmentlabs.ai/documentation/performance/tracing#distributed-tracing           |
 | Agent linked traces              | Links delegated agent/subsystem work back to the parent trace       | https://docs.judgmentlabs.ai/documentation/performance/tracing#subagent-tracing              |
-| Behavior or score signals        | Enables quality filtering and production monitoring                 | https://docs.judgmentlabs.ai/documentation/performance/agent-behavior-monitoring             |
+| Labels or scores                 | Filter by label or score and track how often each label is applied  | https://docs.judgmentlabs.ai/documentation/judges/monitor-judge-results                      |
 
 These are NOT baseline best practices. Only add what's relevant based on
 inference or user input.
@@ -211,9 +211,9 @@ After adding context, point users to relevant UI features:
 - Traces view: See individual requests, span hierarchy, latency, cost, inputs,
   outputs, and errors
 - Sessions view: See grouped conversations if `session_id` is added
-- Behaviors: Filter traces or sessions by monitored behavior
-- Automations and alerts: Route failures, behaviors, or thresholds into
-  follow-up workflows
+- Labels: Filter traces or sessions by the labels judges applied
+- Automations and alerts: Route failures, a "Judge applied label" condition, or
+  thresholds into follow-up workflows
 - Judgment Agent search: Ask the in-product agent to search traces, cite spans,
   and investigate failures
 

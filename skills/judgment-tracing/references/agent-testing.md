@@ -153,7 +153,7 @@ results = client.evaluation.create().run(
 The agent entrypoint should be traced as the root span, usually with
 `@Tracer.observe(span_type="agent")` or the framework/provider integration the
 application already uses. Hosted scorers can use `offline_trace_id` to inspect
-the stored trace server-side. Custom code judges can also use the fields copied
+the stored trace server-side. Code judges can also use the fields copied
 into each generated example.
 
 ## Implementation Notes

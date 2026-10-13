@@ -19,7 +19,7 @@ Follow these principles for all Judgment work:
 3. **Tracing first for integrations**: When the user asks to add Judgment to an app, start with [references/tracing.md](references/tracing.md) unless they explicitly ask for evaluations or code judges.
 4. **Stay on the tracer surface**: In most cases, use Judgment's tracer, wrappers, and documented integrations directly. Do not reach into underlying provider objects or create additional wrapper layers unless the current docs require it or a real instrumentation gap remains after using the supported integration.
 5. **Start small**: For evaluations, begin with a focused example set and one scorer before expanding.
-6. **Use the right scorer**: Use prompt/hosted scorers for rubric-based judgment and Python code judges for deterministic logic, custom dependencies, or trace inspection.
+6. **Use the right scorer**: Use Agent judges for rubric-based judgment and Python code judges for deterministic logic, custom dependencies, or trace inspection.
 7. **Keep credentials out of chat**: Ask the user to set `JUDGMENT_API_KEY` and `JUDGMENT_ORG_ID` locally rather than pasting secrets.
 8. **Use offline agent tests before production changes**: For model, prompt, tool, or agent config changes, pull a stable dataset, collect fresh `OfflineTracer` traces for each input, then evaluate the generated offline examples in one batch. If the production agent is already traced with Judgment, leave that tracing intact and swap only the test harness initialization to `client.offline_tracer(...)`.
 
