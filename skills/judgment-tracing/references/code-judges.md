@@ -1,8 +1,8 @@
-# Judgment Code judges
+# Judgment Code Judges
 
-Use this reference when creating Python Code judges.
+Use this reference when creating Python code judges.
 
-## Current support
+## Current Support
 
 Code judges are Python-first. Do not invent a TypeScript `Judge` subclass workflow unless the current docs say it exists.
 
@@ -12,16 +12,16 @@ Fetch the current docs before implementation:
 curl -s https://docs.judgmentlabs.ai/documentation/evaluation/custom-scorers.md
 ```
 
-## When to use a Code judge
+## When To Use A Code Judge
 
-Use a Code judge when scoring needs:
+Use a code judge when scoring needs:
 
 - deterministic business logic
 - custom Python dependencies
 - direct trace inspection
 - structured numeric, binary, or categorical outputs
 
-## Minimal pattern
+## Minimal Pattern
 
 ```python
 from judgeval.data import Example
@@ -37,7 +37,7 @@ class ResolutionScorer(Judge[BinaryResponse]):
         )
 ```
 
-## Trace-aware pattern
+## Trace-Aware Pattern
 
 Check for trace data before reading spans:
 
@@ -61,7 +61,7 @@ class ToolCallScorer(Judge[NumericResponse]):
         )
 ```
 
-## Packaging guidance
+## Packaging Guidance
 
 - Keep the scorer class in the entrypoint file.
 - Add dependencies to `requirements.txt`.
