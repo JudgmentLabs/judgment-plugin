@@ -6,13 +6,13 @@
     "email": "support@judgmentlabs.ai"
   },
   "metadata": {
-    "description": "Judgment Labs plugin for Claude Code: the Judgment MCP server plus official skills for tracing, evaluation, and MCP usage."
+    "description": "Judgment Labs plugin for Claude Code: the Judgment MCP server plus skills for setup, the MCP, Issues, and judges and tests."
   },
   "plugins": [
     {
       "name": "judgment",
       "source": "./",
-      "description": "Judgment MCP server plus official skills (tracing, evaluations, code judges, MCP usage best practices)."
+      "description": "Judgment MCP server plus skills for setup, the MCP, Issues, and judges and tests."
     }
   ]
 }

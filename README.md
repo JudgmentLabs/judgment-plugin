@@ -1,22 +1,67 @@
 # Judgment plugin
 
-The official [Judgment](https://judgmentlabs.ai) plugin for AI coding agents.
-One repo, installable in both Claude Code and OpenAI Codex, bundling:
+The official [Judgment](https://judgmentlabs.ai) plugin for Cursor, Claude Code,
+and Codex. One repo installs:
 
-1. **The Judgment MCP server** (`https://mcp.judgmentlabs.ai`): query traces,
-   sessions, labels, judges, prompts, datasets, tests, automations, and
-   agent memory directly from your editor.
-2. **The `judgment-tracing` skill**: best-practice guidance for instrumenting
-   apps with tracing, writing evaluations, building code judges, and running
-   offline agent tests.
-3. **The `mcp-server-best-practices` skill**: usage patterns for the Judgment
-   MCP itself (search_traces batching, filter reference, fan-out queries).
+1. **The Judgment MCP server** at <https://mcp.judgmentlabs.ai>: read Issues,
+   traces, judges, labels, datasets, and test runs from your editor. Trace
+   queries go through `discover_schema` and `sql_query`. The same server can
+   read current docs with `search_docs` and `read_doc_page`, and server
+   procedures with `get_skill`.
+2. **Skills** under `skills/`. Each skill is a `SKILL.md` that points at the
+   docs:
 
-The MCP gives your agent live data and actions; the skills teach it how to use
-Judgment well. Together they cover both "what's happening in my agent" and
-"how do I improve it."
+   | Skill | When to use it |
+   | --- | --- |
+   | `judgment-setup` | Integrate Judgment, add tracing, and check first traces and trace health. |
+   | `judgment-mcp` | Query traces and other live project data from the editor. |
+   | `judgment-issues` | Work an open Issue, a Fix with handoff, or a failure cited in traces. |
+   | `judgment-judges-and-tests` | Create judges, use labels as indexes, build datasets, and run test suites. |
+
+Full tool list: [MCP tools](https://docs.judgmentlabs.ai/documentation/reference/mcp-tools).
+Connect and auth: [Connect your coding agent](https://docs.judgmentlabs.ai/documentation/connect/connect-your-coding-agent).
 
 ## Install
+
+### Cursor
+
+Install this Git repository so Cursor loads the skills and the MCP server
+together.
+
+#### Team marketplace
+
+On Teams and Enterprise, an admin adds the marketplace:
+
+1. Open the Cursor dashboard, then **Plugins & MCPs**.
+2. Under **Team Marketplaces**, select **Add Marketplace**.
+3. Select **Import from Repo** and paste
+   <https://github.com/JudgmentLabs/judgment-plugin>.
+4. Add the `judgment` plugin. Set installation to **Default Off**,
+   **Default On**, or **Required**.
+5. Save. Turn on **Auto Refresh** if you want pushes to update the marketplace.
+
+With **Default Off**, developers open **Customize** and install `judgment`.
+**Default On** and **Required** install it for them. Each developer then opens
+the `judgment` MCP server and completes **Sign in** in the browser.
+
+#### Your own Cursor
+
+In agent chat, run:
+
+```text
+/add-plugin https://github.com/JudgmentLabs/judgment-plugin
+```
+
+Install `judgment` from **Customize**, then **Sign in** on the `judgment` MCP
+server.
+
+#### Local checkout
+
+Copy this repo to `~/.cursor/plugins/local/judgment`, then run **Developer:
+Reload Window**. On Enterprise, an admin turns on **Allow Local Plugin
+Imports** under **Dashboard** > **Settings** > **Security & Identity** >
+**Marketplace and Plugins**. Use a real copy, because a symlink loads only when
+its target stays inside `~/.cursor/plugins/local`.
 
 ### Claude Code
 
@@ -25,11 +70,14 @@ claude plugin marketplace add JudgmentLabs/judgment-plugin
 claude plugin install judgment@judgment-plugin
 ```
 
-If you previously added the Judgment MCP manually (for example
-`claude mcp add judgment-mcp ...`), remove it first so you do not end up with
-two Judgment servers:
+Start a new session, run `/mcp`, select `plugin:judgment:judgment`, and select
+**Authenticate**.
+
+If you previously added the Judgment MCP by hand, remove it so you don't end
+up with two servers:
 
 ```bash
+claude mcp remove judgment
 claude mcp remove judgment-mcp
 ```
 
@@ -39,113 +87,133 @@ claude mcp remove judgment-mcp
 codex plugin marketplace add JudgmentLabs/judgment-plugin
 ```
 
-Then open the plugin browser inside Codex with `/plugins`, select the
-`judgment` marketplace, and choose `Install plugin`. Start a new thread after
-installing, then authenticate:
+Open `/plugins` in Codex, select the `judgment` marketplace, and select
+**Install plugin**. To install from the shell instead, run
+`codex plugin add judgment@judgment`. Start a new thread, then sign in:
 
 ```bash
 codex mcp login judgment
 ```
 
-### Other agents (npx skills)
-
-For Cursor, Windsurf, and other agents, install the skills with the
-[skills CLI](https://skills.sh):
-
-```bash
-npx skills add JudgmentLabs/judgment-plugin
-```
-
-Then add the MCP server manually (see Standalone MCP below).
-
 ## Authentication
 
-The plugin ships with **OAuth** as the default (Judgment's recommended
-method). On first use your agent opens a browser window where you sign into
-Judgment and authorize access. No API keys or headers to manage. Organization
-selection happens per tool call via the `organization_id` argument (start with
-`list_organizations`).
+The shipped `.mcp.json` contains only the production server URL. OAuth is the
+way to sign in. On first use the client opens a browser, you authorize
+Judgment, and the client stores the access token. No API key is committed in
+this repo.
 
-### API key alternative (headless / CI)
+During OAuth, select the organization and leave **Project** set to **All
+Projects in This Organization**. A project-specific grant hides cross-project
+discovery tools.
 
-**Claude Code** — add an Authorization header to `.mcp.json`:
+### API key when OAuth is unavailable
+
+Use a personal API key from **Settings** > **Personal API Keys**. MCP doesn't
+accept ingest API keys. Copy the organization ID, then export both values:
+
+```bash
+export JUDGMENT_API_KEY="<your-personal-api-key>"
+export JUDGMENT_ORG_ID="<your-organization-id>"
+```
+
+The key has the same permissions as your role. A Viewer key can read. Writes
+need Developer. The client sends `Authorization: Bearer <key>` and pins the
+connection to one organization with `X-Organization-Id`.
+
+#### Cursor
+
+Add this to `~/.cursor/mcp.json` (every workspace) or `.cursor/mcp.json` (one
+project):
 
 ```json
 {
   "mcpServers": {
     "judgment": {
-      "type": "http",
       "url": "https://mcp.judgmentlabs.ai",
       "headers": {
-        "Authorization": "Bearer ${JUDGMENT_API_KEY}"
+        "Authorization": "Bearer ${env:JUDGMENT_API_KEY}",
+        "X-Organization-Id": "${env:JUDGMENT_ORG_ID}"
       }
     }
   }
 }
 ```
 
-**Codex** — configure the server in `~/.codex/config.toml` instead of the
-plugin, using a bearer token from the environment:
+#### Claude Code
+
+Run:
+
+```bash
+claude mcp add --transport http judgment https://mcp.judgmentlabs.ai \
+  --header "Authorization: Bearer $JUDGMENT_API_KEY" \
+  --header "X-Organization-Id: $JUDGMENT_ORG_ID"
+```
+
+#### Codex
+
+Add this to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.judgment]
 url = "https://mcp.judgmentlabs.ai"
 bearer_token_env_var = "JUDGMENT_API_KEY"
+env_http_headers = { "X-Organization-Id" = "JUDGMENT_ORG_ID" }
 ```
 
-Then export the key before starting your agent:
+#### Pin one project
 
-```bash
-export JUDGMENT_API_KEY="your_key_here"
-```
+To pin one project as well, add an `X-Project-Id` header with the project ID.
+It requires `X-Organization-Id`. A project-bound connection hides
+organization-level tools such as `list_projects`.
 
-The Judgment MCP needs only the `Authorization: Bearer` header; there is no
-org-id header. Get your API key from the
-[Judgment platform](https://app.judgmentlabs.ai).
+Reload the client after changing MCP config. A `401` with an API key usually
+means `JUDGMENT_API_KEY` is missing from the environment the client runs in.
 
-## Standalone MCP (no plugin)
+Confirm the connection by asking the agent to call `list_organizations`, then
+`list_projects`, and to return the IDs without making changes.
 
-If you only want the MCP server without the skills, add it directly:
-
-```bash
-# Claude Code
-claude mcp add judgment --transport http https://mcp.judgmentlabs.ai
-
-# Codex (~/.codex/config.toml)
-# [mcp_servers.judgment]
-# url = "https://mcp.judgmentlabs.ai"
-```
-
-See the [Judgment MCP docs](https://docs.judgmentlabs.ai/documentation/mcp-server)
-for full details.
+SDK tracing still needs its own organization ingest key (`JUDGMENT_API_KEY`
+starting with `jli_`) and `JUDGMENT_ORG_ID`. OAuth for MCP doesn't replace
+those SDK credentials. See
+[Set up tracing](https://docs.judgmentlabs.ai/documentation/connect/set-up-tracing).
 
 ## What's inside
 
 ```
 judgment-plugin/
-├── .claude-plugin/          # Claude Code plugin + marketplace manifests
-├── .codex-plugin/           # Codex plugin manifest
-├── .agents/plugins/         # Codex marketplace manifest
-├── .mcp.json                # the Judgment MCP server (shared by both agents)
-├── assets/                  # Judgment logo and composer icon
-└── skills/
-    ├── judgment-tracing/
-    └── mcp-server-best-practices/
+├── .cursor-plugin/plugin.json   # Cursor manifest (skills + .mcp.json)
+├── .claude-plugin/              # Claude Code plugin + marketplace
+├── .codex-plugin/               # Codex plugin manifest
+├── .agents/plugins/             # Codex marketplace manifest
+├── .mcp.json                    # Judgment MCP (prod URL), for every client
+├── assets/                      # logo and composer icon
+└── skills/                      # judgment-setup, judgment-mcp,
+                                 # judgment-issues, judgment-judges-and-tests
 ```
 
-Claude Code namespaces the MCP tools as
-`mcp__plugin_judgment_judgment__<tool>` (for example
-`mcp__plugin_judgment_judgment__search_traces`); use the full name in
-permission rules or subagent tool lists. In Codex, invoke the skills
-explicitly with `$judgment-tracing` or `$mcp-server-best-practices`.
+All three clients load `.mcp.json`, which points at
+<https://mcp.judgmentlabs.ai>.
+
+Each client invokes a skill with its own prefix:
+
+| Client | Invoke `judgment-setup` |
+| --- | --- |
+| Claude Code | `/judgment:judgment-setup` |
+| Codex | `$judgment-setup` |
+| Cursor | `/judgment-setup` |
+
+The other three skills follow the same pattern. Claude Code namespaces MCP
+tools as `mcp__plugin_judgment_judgment__<tool>` (for example
+`mcp__plugin_judgment_judgment__list_issues`). Use the full name in permission
+rules or subagent tool lists.
 
 ## Local development
 
 ```bash
 claude --plugin-dir .        # load this checkout for one session
-claude plugin validate .     # schema-check
+claude plugin validate .     # schema-check the Claude Code plugin
 ```
 
 ## License
 
-[Apache-2.0](LICENSE)
+[Apache-2.0](LICENSE). [Privacy policy](https://app.judgmentlabs.ai/privacy).

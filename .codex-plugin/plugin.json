@@ -1,13 +1,13 @@
 {
   "name": "judgment",
-  "version": "1.0.1",
-  "description": "Access Judgment traces, sessions, labels, judges, prompts, datasets, and tests directly from Codex, with official skills for tracing, evaluation, and MCP usage best practices.",
+  "version": "1.1.0",
+  "description": "Read Judgment Issues, traces, judges, and test runs from Codex. Includes the Judgment MCP server and skills for setup, the MCP, Issues, and judges and tests.",
   "author": {
     "name": "Judgment Labs",
     "email": "support@judgmentlabs.ai",
     "url": "https://judgmentlabs.ai"
   },
-  "homepage": "https://docs.judgmentlabs.ai/documentation/mcp-server",
+  "homepage": "https://docs.judgmentlabs.ai/documentation/connect/connect-your-coding-agent",
   "repository": "https://github.com/JudgmentLabs/judgment-plugin",
   "license": "Apache-2.0",
   "keywords": [
@@ -16,16 +16,16 @@
     "mcp",
     "observability",
     "tracing",
-    "evaluation",
-    "agent-judges",
-    "llm-monitoring"
+    "issues",
+    "judges",
+    "test-suites"
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Judgment",
-    "shortDescription": "Query Judgment traces, sessions, labels, judges, and docs.",
-    "longDescription": "Adds the Judgment MCP server and the official Judgment skills so Codex can inspect live agent data and follow Judgment best practices for tracing, evaluations, code judges, datasets, and monitoring.",
+    "shortDescription": "Read Judgment Issues, traces, judges, and test runs.",
+    "longDescription": "Adds the Judgment MCP server and skills so Codex can set up tracing, read Issues, query traces, and work with judges and test suites.",
     "developerName": "Judgment Labs",
     "category": "Productivity",
     "capabilities": [
@@ -38,9 +38,9 @@
     "logo": "./assets/logo.svg",
     "composerIcon": "./assets/composer-icon.svg",
     "defaultPrompt": [
-      "Show me recent high-cost Judgment traces.",
-      "Find sessions with errors in Judgment.",
-      "Search Judgment docs for MCP setup."
+      "List open Judgment Issues and summarize the highest severity one.",
+      "Check trace health for this project over the last 7 days.",
+      "Call discover_schema, then sql_query, to find the slowest traces this week."
     ]
   }
 }
