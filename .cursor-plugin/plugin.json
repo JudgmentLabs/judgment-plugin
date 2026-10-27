@@ -23,5 +23,5 @@
   ],
   "category": "integrations",
   "skills": "./skills/",
-  "mcpServers": "./mcp.json"
+  "mcpServers": "./.mcp.json"
 }
