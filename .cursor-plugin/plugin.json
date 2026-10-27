@@ -1,0 +1,27 @@
+{
+  "name": "judgment",
+  "displayName": "Judgment",
+  "version": "1.1.0",
+  "description": "Read Judgment Issues, traces, judges, and test runs from your coding agent. Includes the Judgment MCP server and skills for setup, the MCP, Issues, and judges and tests.",
+  "author": {
+    "name": "Judgment Labs",
+    "email": "support@judgmentlabs.ai"
+  },
+  "homepage": "https://docs.judgmentlabs.ai/documentation/connect/connect-your-coding-agent",
+  "repository": "https://github.com/JudgmentLabs/judgment-plugin",
+  "license": "Apache-2.0",
+  "logo": "assets/logo.svg",
+  "keywords": [
+    "judgment",
+    "judgeval",
+    "mcp",
+    "observability",
+    "tracing",
+    "issues",
+    "judges",
+    "test-suites"
+  ],
+  "category": "integrations",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

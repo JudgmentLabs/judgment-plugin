@@ -2,14 +2,15 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "judgment",
   "displayName": "Judgment",
-  "description": "Access Judgment traces, sessions, labels, judges, prompts, datasets, and tests directly from your AI coding tool, with official skills for tracing, evaluation, and MCP usage best practices.",
-  "version": "1.0.1",
+  "description": "Read Judgment Issues, traces, judges, and test runs from your coding agent. Includes the Judgment MCP server and skills for setup, the MCP, Issues, and judges and tests.",
+  "version": "1.1.0",
   "author": {
     "name": "Judgment Labs",
     "email": "support@judgmentlabs.ai",
     "url": "https://judgmentlabs.ai"
   },
-  "homepage": "https://docs.judgmentlabs.ai/documentation/mcp-server",
+  "homepage": "https://docs.judgmentlabs.ai/documentation/connect/connect-your-coding-agent",
+  "privacyPolicyUrl": "https://app.judgmentlabs.ai/privacy",
   "repository": "https://github.com/JudgmentLabs/judgment-plugin",
   "license": "Apache-2.0",
   "keywords": [
@@ -18,8 +19,8 @@
     "mcp",
     "observability",
     "tracing",
-    "evaluation",
-    "agent-judges",
-    "llm-monitoring"
+    "issues",
+    "judges",
+    "test-suites"
   ]
 }
